@@ -12,10 +12,18 @@ export default class Review extends Task {
         let fetch = await this.fetch
         let response = await fetch(url);
         if (response.status !== 200) {
-            return;
+            this.logger.error(`Failed to fetch review HTML from ${url}: Status ${response.status}`);
+            return '';
         }
-        let html = this.parseHTML(await response.text());
-        return html.querySelector('.review-content').innerHTML;
+        let htmlText = await response.text();
+        let html = this.parseHTML(htmlText);
+        let contentNode = html.querySelector('.review-content') || html.querySelector('#link-report') || html.querySelector('.article');
+        
+        if (!contentNode) {
+            this.logger.error(`Could not find review content in DOM for ${url}. Returning empty text.`);
+            return '';
+        }
+        return contentNode.innerHTML;
     }
 
     async run() {

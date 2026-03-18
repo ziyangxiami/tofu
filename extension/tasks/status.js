@@ -51,8 +51,12 @@ export default class Status extends Task {
             }
             let json = await response.json();
             count = json.items.length;
+            let requestedMaxId = lastStatusId;
             for (let item of json.items) {
                 let status = item.status;
+                if (status.id === requestedMaxId) {
+                    continue; // 豆瓣接口 max_id 包含边界，需跳过重复的一条以防触发数据库唯一键冲突
+                }
                 item.id = parseInt(status.id);
                 item.created = Date.now();
                 lastStatusId = status.id;
