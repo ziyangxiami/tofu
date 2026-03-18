@@ -219,8 +219,8 @@ export default class ServicePanel {
     }
 
     async init(service) {
-        service.addEventListener('statechange', event => this.onStateChange(event.target));
-        service.addEventListener('progress', event => this.onProgress(event.target));
+        service.addEventListener('statechange', event => this.onStateChange(service));
+        service.addEventListener('progress', event => this.onProgress(service));
         let debug = await service.getProperty('debug');
         if (debug) {
             service.addEventListener('log', event => this.onLog(event.detail));
