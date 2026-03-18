@@ -1,20 +1,16 @@
 import TaskError from "./TaskError.js";
 import Storage  from "../storage.js";
+import parseHTMLNode from "./html_parser.js";
 
 export default class Task {
     /**
      * Parse HTML
      * @param {string} html
      * @param {string} url
-     * @returns {Document}
+     * @returns {HTMLElement}
      */
     static parseHTML(html, url) {
-        let context = document.implementation.createHTMLDocument('');
-        context.documentElement.innerHTML = html;
-        let base = context.createElement('base');
-        base.href = url;
-        context.head.appendChild(base);
-        return context;
+        return parseHTMLNode(html, url);
     }
 
     /**

@@ -7,7 +7,37 @@ import AsyncBlockingQueue from "./services/AsyncBlockingQueue.js";
 import StateChangeEvent from "./services/StateChangeEvent.js";
 import Logger from "./services/Logger.js";
 import {taskFromJSON} from "./services/task_deserialize.js";
+import Annotation from './tasks/annotation.js';
+import Blacklist from './tasks/blacklist.js';
+import Board from './tasks/board.js';
+import Doulist from './tasks/doulist.js';
+import Doumail from './tasks/doumail.js';
+import Files from './tasks/files.js';
+import Follower from './tasks/follower.js';
+import Following from './tasks/following.js';
+import Interest from './tasks/interest.js';
+import Mock from './tasks/mock.js';
+import Note from './tasks/note.js';
+import Photo from './tasks/photo.js';
+import Review from './tasks/review.js';
+import Status from './tasks/status.js';
 
+const TASK_MODULES = {
+    'annotation': Annotation,
+    'blacklist': Blacklist,
+    'board': Board,
+    'doulist': Doulist,
+    'doumail': Doumail,
+    'files': Files,
+    'follower': Follower,
+    'following': Following,
+    'interest': Interest,
+    'mock': Mock,
+    'note': Note,
+    'photo': Photo,
+    'review': Review,
+    'status': Status
+};
 
 /**
  * Service settings
@@ -301,13 +331,13 @@ export default class Service extends EventTarget {
         let job = new Job(this, targetUserId, localUserId, isOffline);
         for (let {name, args} of tasks) {
             try {
-                let taskFile = `./tasks/${name.toLowerCase()}.js`
-                console.log(`taskFile ${taskFile}`)
-                let module = await import(taskFile);
+                let taskName = name.toLowerCase();
+                if (!TASK_MODULES[taskName]) throw new Error('Unknown task: ' + name);
+                let module = TASK_MODULES[taskName];
                 if (typeof args == 'undefined') {
                     args = [];
                 }
-                let task = new module.default(...args);
+                let task = new module(...args);
                 console.log("add task", task)
                 job.addTask(task);
             } catch (e) {
