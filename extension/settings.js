@@ -14,7 +14,9 @@ export default class Settings {
                     target = target[node];
                 }
                 target[lastNode] = settings[key];
-            } catch (e) {}
+            } catch (e) {
+                console.error(e)
+            }
         }
     }
 

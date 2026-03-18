@@ -1,7 +1,7 @@
 'use strict';
 import Storage from './storage.js';
 import FileSaver from './vendor/FileSaver.js';
-import Service from "./service.js";
+import ServiceProxy from './services/ServiceProxy.js';
 
 const ACCOUNT_TEMPLATE = `\
 <article class="media box account">
@@ -163,7 +163,7 @@ class TaskModal {
             };
         }
         console.log("createJob tasks", tasks)
-        const service = await Service.getInstance();
+        const service = ServiceProxy.getProxy();
         console.log("createJob service", service)
         // 延时 3 秒
         // await new Promise(resolve => setTimeout(resolve, 3000));

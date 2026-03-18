@@ -37,6 +37,7 @@ export default class Service extends EventTarget {
         this._jobQueue = new AsyncBlockingQueue();
         this._status = Service.STATE_STOPPED;
         this.lastRequest = 0;
+        this._debug = false;
         chrome.runtime.onConnect.addListener(port => this.onConnect(port));
     }
 
@@ -101,7 +102,8 @@ export default class Service extends EventTarget {
      * @param {boolean} value
      */
     set debug(value) {
-        if (this._debug === !!value) {
+        this._debug = value;
+        if (this._debug) {
             let logger = this.logger;
             logger.level = logger.LEVEL_DEBUG;
             logger.addEventListener('log', event => {
@@ -160,7 +162,12 @@ export default class Service extends EventTarget {
     onMessage(port, message) {
         switch (message.type) {
             case 'syscall':
-            let retVal = this[message.method].apply(this, message.args);
+            let retVal;
+            if (message.isProperty) {
+                retVal = this[message.method];
+            } else {
+                retVal = this[message.method].apply(this, message.args);
+            }
             port.postMessage({
                 type: message.type,
                 id: message.id,
@@ -373,6 +380,7 @@ export default class Service extends EventTarget {
                 console.log("🆕 创建新的 Service 实例...");
                 Service._instance = new Service();
             }
+            await Service._instance.loadSettings()
             Service.startup();
             await Service._instance.start();
         }
@@ -399,7 +407,7 @@ export default class Service extends EventTarget {
             this.lastRequest = restoredService.lastRequest;
             this._debug = restoredService._debug;
 
-            console.log('Service 状态已恢复');
+            console.log(`Service 状态已恢复`);
         }
     }
 
@@ -413,7 +421,7 @@ export default class Service extends EventTarget {
         const RUN_FOREVER = true;
 
         let service = await Service.getInstance();
-        await service.loadSettings();
+        // await service.loadSettings();
         let logger = service.logger;
 
         let lastRequest = 0;
@@ -470,8 +478,11 @@ export default class Service extends EventTarget {
                     lastRequest = Date.now();
                     console.log(`Fetching ${url}...`, resource);
 
+                    // 确保所有发给豆瓣的请求携带 credentials，否则会被当作未登录的机器流量拦截
+                    let fetchInit = Object.assign({ credentials: 'include' }, init);
+
                     // 直接使用传入的 init 参数，不再修改 Header
-                    return fetch(resource, init).catch(e => {
+                    return fetch(resource, fetchInit).catch(e => {
                         if (retries > 0) {
                             logger.debug(e);
                             logger.debug(`Attempt to fetch ${retries} times...`);

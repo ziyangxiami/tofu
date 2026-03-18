@@ -1,5 +1,6 @@
 import Settings from './settings.js';
 import Service, {SERVICE_SETTINGS} from './service.js';
+import ServiceProxy from './services/ServiceProxy.js';
 import {TASK_FILES_SETTINGS} from './tasks/files.js';
 import Notification from './ui/notification.js';
 import TabPanel from './ui/tab.js';
@@ -169,9 +170,10 @@ class GeneralPanel {
         try {
             await Settings.save(settings);
             const service = await Service.getInstance();
-            await Service.getInstance().loadSettings();
+            await service.loadSettings();
             Notification.show('保存成功');
         } catch (e) {
+            console.log("保存失败", e)
             Notification.show('保存失败', {type: 'danger'});
         }
     }
@@ -234,20 +236,24 @@ export default class ServicePanel {
         $panel.find('.service-ctrl').addClass('is-hidden');
 
         let statusName;
+        // Service.STATE_STOPPED = 0
+        // Service.STATE_START_PENDING = 1
+        // Service.STATE_STOP_PENDING = 2
+        // Service.STATE_RUNNING = 3
         switch (service.status) {
-            case Service.STATE_STOPPED:
+            case 0:
                 statusName = '已停止';
                 this.$start.removeClass('is-hidden');
                 break;
-            case Service.STATE_START_PENDING:
+            case 1:
                 this.$stop.removeClass('is-hidden');
                 statusName = '等待任务';
                 break;
-            case Service.STATE_STOP_PENDING:
+            case 2:
                 this.$loading.removeClass('is-hidden');
                 statusName = '正在停止';
                 break;
-            case Service.STATE_RUNNING:
+            case 3:
                 this.$stop.removeClass('is-hidden');
                 statusName = '运行中';
                 break;
@@ -280,7 +286,13 @@ export default class ServicePanel {
         // await new Promise(resolve => {
         //     chrome.runtime.sendMessage({ action: "ServicePanel" }, resolve);
         // });
-        let service = await Service.getInstance()
+        let service = ServiceProxy.getProxy();
+        // Since we are using a proxy, we need to ask for the state via RPC, or properties
+        // Wait for state to sync
+        service.status = await service.getProperty('status');
+        service.currentJob = await service.getProperty('currentJob');
+        service.debug = await service.getProperty('debug');
+
         return new ServicePanel('.page-tab-content[name="service"]', service);
     }
 }
