@@ -68,6 +68,17 @@ chrome.runtime.onInstalled.addListener(() => {
                         ]
                     },
                     "condition": { "urlFilter": "*://*.douban.com/*", "resourceTypes": ["xmlhttprequest"] }
+                },
+                {
+                    "id": 106,
+                    "priority": 1,
+                    "action": {
+                        "type": "modifyHeaders",
+                        "requestHeaders": [
+                            { "header": "Referer", "operation": "set", "value": "https://m.douban.com/" }
+                        ]
+                    },
+                    "condition": { "urlFilter": "*://*.doubanio.com/*", "resourceTypes": ["image", "xmlhttprequest"] }
                 }
             ]
         });

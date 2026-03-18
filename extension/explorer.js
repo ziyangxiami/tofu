@@ -7,14 +7,6 @@ import Service from "./service.js";
 
 const PAGE_SIZE = 50;
 
-// Override Zepto.fn.attr to globally fix Douban CDN changes returning 418 (I'm a teapot)
-const originalAttr = $.fn.attr;
-$.fn.attr = function(name, value) {
-    if ((name === 'src' || name === 'data-src') && typeof value === 'string') {
-        value = value.replace('/view/subject/m/public/', '/view/subject/s/public/');
-    }
-    return originalAttr.apply(this, arguments);
-};
 
 /**
  * Class Modal
