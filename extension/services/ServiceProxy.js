@@ -15,9 +15,9 @@ export default class ServiceProxy {
         port.onMessage.addListener(message => {
             if (message.type === 'syscall') {
                 eventTarget.dispatchEvent(new CustomEvent(message.id, {detail: message.return}));
-            } else if (message.type === 'progress' || message.type === 'statechange') {
+            } else if (message.type) {
                 // Forward events for UI updates
-                eventTarget.dispatchEvent(new CustomEvent(message.type, {detail: message}));
+                eventTarget.dispatchEvent(new CustomEvent(message.type, {detail: message.detail !== undefined ? message.detail : message}));
             }
         });
 
