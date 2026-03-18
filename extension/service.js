@@ -110,6 +110,8 @@ export default class Service extends EventTarget {
                 let entry = event.detail;
                 let datetime = new Date(entry.time).toISOString();
                 console.log(`[${datetime}] ${entry.levelName}: ${entry.message}`);
+                // Broadcast to UI via dispatcher override
+                this.dispatchEvent(new CustomEvent('log', { detail: entry }));
             })
         }
     }
@@ -144,6 +146,31 @@ export default class Service extends EventTarget {
         this._ports.set(this.getPortName(port), port);
         port.onMessage.addListener(message => this.onMessage(port, message));
         port.onDisconnect.addListener(port => this.onDisconnect(port));
+    }
+
+    /**
+     * Override dispatchEvent to broadcast events to UI ports in MV3
+     */
+    dispatchEvent(event) {
+        let ret = super.dispatchEvent(event);
+        if (event && event.type) {
+            let message = { type: event.type };
+            // Serialize necessary event properties to send to UI
+            for (let key in event) {
+                if (typeof event[key] !== 'function' && key !== 'detail') {
+                    message[key] = event[key];
+                }
+            }
+            if (event.detail !== undefined) {
+                // Safely copy detail object
+                try {
+                    message.detail = JSON.parse(JSON.stringify(event.detail));
+                } catch(e) { message.detail = event.detail; }
+            }
+            // For custom objects like task, serialize what we need or just broadcast state
+            this.broadcast(message);
+        }
+        return ret;
     }
 
     /**

@@ -218,7 +218,7 @@ export default class ServicePanel {
         service.addEventListener('statechange', event => this.onStateChange(event.target));
         service.addEventListener('progress', event => this.onProgress(event.target));
         if (service.debug) {
-            service.logger.addEventListener('log', event => this.onLog(event.detail));
+            service.addEventListener('log', event => this.onLog(event.detail));
             this.$logs.parent().removeClass('is-hidden');
         }
         this.onStateChange(service);
