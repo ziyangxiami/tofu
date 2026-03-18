@@ -215,13 +215,18 @@ export default class ServicePanel {
             console.log("stop click")
             await service.stop();
         });
+        this.init(service);
+    }
+
+    async init(service) {
         service.addEventListener('statechange', event => this.onStateChange(event.target));
         service.addEventListener('progress', event => this.onProgress(event.target));
-        if (service.debug) {
+        let debug = await service.getProperty('debug');
+        if (debug) {
             service.addEventListener('log', event => this.onLog(event.detail));
             this.$logs.parent().removeClass('is-hidden');
         }
-        this.onStateChange(service);
+        await this.onStateChange(service);
     }
 
     onLog(entry) {
@@ -231,53 +236,56 @@ export default class ServicePanel {
         this.$logs.scrollTop(this.$logs.prop('scrollHeight'));
     }
 
-    onStateChange(service) {
+    async onStateChange(service) {
         let $panel = $(this.panel);
         $panel.find('.service-ctrl').addClass('is-hidden');
 
+        let status = await service.getProperty('status');
         let statusName;
-        // Service.STATE_STOPPED = 0
-        // Service.STATE_START_PENDING = 1
-        // Service.STATE_STOP_PENDING = 2
-        // Service.STATE_RUNNING = 3
-        switch (service.status) {
-            case 0:
+        // Service.STATE_STOPPED = 1
+        // Service.STATE_START_PENDING = 2
+        // Service.STATE_STOP_PENDING = 3
+        // Service.STATE_RUNNING = 4
+        switch (status) {
+            case 1:
                 statusName = '已停止';
                 this.$start.removeClass('is-hidden');
                 break;
-            case 1:
+            case 2:
                 this.$stop.removeClass('is-hidden');
                 statusName = '等待任务';
                 break;
-            case 2:
+            case 3:
                 this.$loading.removeClass('is-hidden');
                 statusName = '正在停止';
                 break;
-            case 3:
+            case 4:
                 this.$stop.removeClass('is-hidden');
                 statusName = '运行中';
                 break;
         }
         $panel.find('.service-status')
-            .data('status', service.status)
+            .data('status', status)
             .text(statusName);
-        this.onProgress(service);
+        await this.onProgress(service);
     }
 
-    onProgress(service) {
+    async onProgress(service) {
         this.$job.empty();
-        let currentJob = service.currentJob;
+        let currentJob = await service.getProperty('currentJob');
         if (!currentJob || !currentJob.tasks) {
             return;
         }
         for (let task of currentJob.tasks) {
-            console.log("类名: ", task.constructor.name);
+            console.log("类名: ", task.taskType || task.constructor.name);
             let $task = $(TEMPLATE_TASK);
-            if (task === currentJob.currentTask) {
+            let isCurrent = currentJob._currentTask && 
+                            (task.taskType === currentJob._currentTask.taskType || task.name === currentJob._currentTask.name);
+            if (isCurrent) {
                 $task.addClass('is-selected');
             }
             $task.find('.progress').val(task.completion).attr('max', task.total);
-            $task.find('.task-name').text(task.name);
+            $task.find('.task-name').text(task.name || (task.taskType === 'Review' ? '评论' : '任务'));
             $task.appendTo(this.$job);
         }
     }

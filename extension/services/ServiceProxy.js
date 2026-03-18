@@ -32,9 +32,11 @@ export default class ServiceProxy {
                 }
                 
                 if (property in target) {
-                    return (...args) => {
-                        target[property].apply(target, args);
-                    };
+                    const val = target[property];
+                    if (typeof val === 'function') {
+                        return (...args) => val.apply(target, args);
+                    }
+                    return val;
                 }
 
                 // Any unknown property becomes an RPC to the background service!

@@ -44,7 +44,10 @@ export default class Task {
     }
 
     toJSON() {
+        let n = '';
+        try { n = this.name; } catch(e) {}
         return {
+            name: n,
             taskType: this.constructor.name, // 存储类名
             jobId: this.jobId,
             session: this.session,
