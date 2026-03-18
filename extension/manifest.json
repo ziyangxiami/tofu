@@ -2,9 +2,9 @@
     "name": "豆伴：豆瓣账号备份工具(manifest V3版)",
     "short_name": "豆伴(V3版)",
     "author": "豆坟|豆坟2号",
-    "version": "0.12.2",
-    "version_name": "0.12.2 Mainfest V3版本",
-    "description": "用于备份豆瓣网的用户数据及图片，并支持将备份数据导出到 Excel 文档。现已支持manifest V3。",
+    "version": "0.13.0",
+    "version_name": "0.13.0 Mainfest V3 终极修复版",
+    "description": "用于备份豆瓣网的用户数据及图片，并支持将备份数据导出到 Excel 文档。现已支持manifest V3并修复了众多底层拦截与隔离报错。",
     "manifest_version": 3,
     "icons": {
         "16": "images/icon-16x16.png",
