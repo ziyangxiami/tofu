@@ -2,7 +2,7 @@ import TaskError from "./TaskError.js";
 import Storage  from "../storage.js";
 import parseHTMLNode from "./html_parser.js";
 
-// Polyfill .dataset on node-html-parser elements in MV3 ServiceWorker context
+// Polyfill .dataset and classList [Symbol.iterator] on node-html-parser elements in MV3 ServiceWorker context
 try {
     let dummy = parseHTMLNode("<div></div>");
     if (dummy && dummy.constructor && dummy.constructor.prototype) {
@@ -35,8 +35,20 @@ try {
             });
         }
     }
+    if (dummy && dummy.classList && dummy.classList.constructor && dummy.classList.constructor.prototype) {
+        let classListProto = dummy.classList.constructor.prototype;
+        if (!classListProto[Symbol.iterator]) {
+            classListProto[Symbol.iterator] = function* () {
+                if (this._set && typeof this._set[Symbol.iterator] === "function") {
+                    yield* this._set;
+                } else if (Array.isArray(this.value)) {
+                    yield* this.value;
+                }
+            };
+        }
+    }
 } catch (e) {
-    console.error('Failed to attach dataset polyfill:', e);
+    console.error('Failed to attach dataset / classList polyfill:', e);
 }
 
 export default class Task {

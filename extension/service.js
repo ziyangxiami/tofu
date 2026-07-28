@@ -316,19 +316,15 @@ export default class Service extends EventTarget {
 
         switch (originalState) {
             case Service.STATE_RUNNING:
-            this._status = Service.STATE_STOP_PENDING;
-            this.dispatchEvent(new StateChangeEvent(originalState, this._status));
-            this.logger.debug('Stopping service...');
-            break;
-
             case Service.STATE_START_PENDING:
-            this._status = Service.STATE_STOPPED;
-            this.dispatchEvent(new StateChangeEvent(originalState, this._status));
-            this.logger.debug('Service stopped.');
-            break;
+            case Service.STATE_STOP_PENDING:
+                this._status = Service.STATE_STOPPED;
+                this.dispatchEvent(new StateChangeEvent(originalState, this._status));
+                this.logger.debug('Service stopped.');
+                break;
 
             default:
-            return false;
+                return false;
         }
         await this.saveState();
         return true;
