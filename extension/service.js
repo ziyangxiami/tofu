@@ -216,20 +216,36 @@ export default class Service extends EventTarget {
      * @param {chrome.runtime.Port} port
      * @param {any} message
      */
-    onMessage(port, message) {
+    async onMessage(port, message) {
         switch (message.type) {
             case 'syscall':
             let retVal;
-            if (message.isProperty) {
-                retVal = this[message.method];
-            } else {
-                retVal = this[message.method].apply(this, message.args);
+            try {
+                if (message.isProperty) {
+                    retVal = this[message.method];
+                } else {
+                    retVal = await this[message.method].apply(this, message.args);
+                }
+                if (retVal && typeof retVal === 'object') {
+                    if (typeof retVal.toJSON === 'function') {
+                        retVal = retVal.toJSON();
+                    } else if (retVal.constructor && retVal.constructor.name !== 'Object' && retVal.constructor.name !== 'Array') {
+                        retVal = true;
+                    }
+                }
+                port.postMessage({
+                    type: message.type,
+                    id: message.id,
+                    return: retVal
+                });
+            } catch (e) {
+                console.error("RPC error:", e);
+                port.postMessage({
+                    type: message.type,
+                    id: message.id,
+                    error: e.toString()
+                });
             }
-            port.postMessage({
-                type: message.type,
-                id: message.id,
-                return: retVal
-            });
             break;
         }
     }
@@ -347,7 +363,10 @@ export default class Service extends EventTarget {
         }
         this._jobQueue.enqueue(job);
         await this.saveState();
-        return job;
+        if (this._status === Service.STATE_STOPPED) {
+            await this.start();
+        }
+        return job.toJSON();
     }
 
     /**
