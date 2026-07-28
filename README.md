@@ -1,8 +1,4 @@
-# 豆伴 修复版
-
-## 申明
-
-fork 自 [doufen-org tofu](https://github.com/doufen-org/tofu) 项目。
+# 豆伴
 
 ## 更新日志
 

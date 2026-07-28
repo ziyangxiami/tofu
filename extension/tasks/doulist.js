@@ -22,9 +22,12 @@ export default class Doulist extends Task {
 
     async run() {
         let version = this.jobId;
-        this.total = this.targetUser.following_doulist_count + this.targetUser.owned_doulist_count;
-        if (this.total == 0) {
-            return;
+        let ownedCount = this.targetUser.owned_doulist_count || 0;
+        let followingCount = this.targetUser.following_doulist_count || 0;
+        this.total = ownedCount + followingCount;
+        if (this.total === 0) {
+            // Default to 1 to allow checking via API in case count properties are absent in targetUser
+            this.total = 1;
         }
         await this.storage.table('version').put({table: 'doulist', version: version, updated: Date.now()});
 
@@ -42,7 +45,13 @@ export default class Doulist extends Task {
                     throw new TaskError('豆瓣服务器返回错误');
                 }
                 let json = await response.json();
-                pageCount = Math.ceil(json.total / PAGE_SIZE);
+                if (!json || json.code || !json.doulists) {
+                    break;
+                }
+                if (typeof json.total === 'number') {
+                    this.total = Math.max(this.total, json.total);
+                    pageCount = Math.ceil(json.total / PAGE_SIZE);
+                }
                 for (let doulist of json.doulists) {
                     let doulistId = parseInt(doulist.id);
                     let row = await this.storage.doulist.get(doulistId);

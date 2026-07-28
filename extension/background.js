@@ -9,7 +9,7 @@ console.log("background.js")
 chrome.runtime.onInstalled.addListener(() => {
     // 移除旧规则
     chrome.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: [1, 2, 101, 102, 103, 104, 105, 106]
+        removeRuleIds: [1, 2, 101, 102, 103, 104, 105, 106, 107]
     }).then(() => {
         // 添加新规则
         chrome.declarativeNetRequest.updateDynamicRules({
@@ -57,6 +57,17 @@ chrome.runtime.onInstalled.addListener(() => {
                         ]
                     },
                     "condition": { "urlFilter": "*/rexxar/api/v2/user/*/interests*", "resourceTypes": ["xmlhttprequest"] }
+                },
+                {
+                    "id": 107,
+                    "priority": 10,
+                    "action": {
+                        "type": "modifyHeaders",
+                        "requestHeaders": [
+                            { "header": "Referer", "operation": "set", "value": "https://m.douban.com/mine/doulist" }
+                        ]
+                    },
+                    "condition": { "urlFilter": "*/rexxar/api/v2/user/*/*doulists*", "resourceTypes": ["xmlhttprequest"] }
                 },
                 {
                     "id": 105,

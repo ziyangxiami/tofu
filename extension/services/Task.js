@@ -2,6 +2,43 @@ import TaskError from "./TaskError.js";
 import Storage  from "../storage.js";
 import parseHTMLNode from "./html_parser.js";
 
+// Polyfill .dataset on node-html-parser elements in MV3 ServiceWorker context
+try {
+    let dummy = parseHTMLNode("<div></div>");
+    if (dummy && dummy.constructor && dummy.constructor.prototype) {
+        let proto = dummy.constructor.prototype;
+        if (!Object.getOwnPropertyDescriptor(proto, "dataset")) {
+            Object.defineProperty(proto, "dataset", {
+                get() {
+                    if (!this._datasetProxy) {
+                        this._datasetProxy = new Proxy(this, {
+                            get(target, prop) {
+                                if (typeof prop !== "string" || prop === "then") return undefined;
+                                let kebab = "data-" + prop.replace(/([A-Z])/g, "-$1").toLowerCase();
+                                if (target.hasAttribute(kebab)) {
+                                    return target.getAttribute(kebab);
+                                }
+                                let lower = "data-" + prop.toLowerCase();
+                                if (target.hasAttribute(lower)) {
+                                    return target.getAttribute(lower);
+                                }
+                                if (target.hasAttribute(prop)) {
+                                    return target.getAttribute(prop);
+                                }
+                                return target.getAttribute(kebab);
+                            }
+                        });
+                    }
+                    return this._datasetProxy;
+                },
+                configurable: true
+            });
+        }
+    }
+} catch (e) {
+    console.error('Failed to attach dataset polyfill:', e);
+}
+
 export default class Task {
     /**
      * Parse HTML
