@@ -100,9 +100,15 @@ chrome.runtime.onInstalled.addListener(() => {
 
 let service;
 
-chrome.runtime.onInstalled.addListener(async () => {
+// 在 Service Worker 启动/唤醒时立即初始化 Service，确保 onConnect 监听器能正常注册
+(async () => {
     service = await Service.getInstance();
-    // Service.startup()
+})();
+
+chrome.runtime.onInstalled.addListener(async () => {
+    if (!service) {
+        service = await Service.getInstance();
+    }
 });
 
 // 在适当的时候保存状态

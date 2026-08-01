@@ -164,8 +164,16 @@ export default class Service extends EventTarget {
      * @returns {string}
      */
     getPortName(port) {
-        let tab = port.sender.tab;
-        return `${port.name}-${tab.windowId}-${tab.id}`;
+        if (port._portId) {
+            return port._portId;
+        }
+        let tab = port.sender ? port.sender.tab : null;
+        if (tab) {
+            port._portId = `${port.name}-${tab.windowId}-${tab.id}`;
+        } else {
+            port._portId = `${port.name}-${(port.sender && port.sender.id) || 'ext'}-${Math.random().toString(36).substring(2, 9)}`;
+        }
+        return port._portId;
     }
 
     /**
