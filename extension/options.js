@@ -15,16 +15,34 @@ class AccountPanel {
     async load() {
         const URL_LOGOUT = 'https://www.douban.com/accounts/logout?ck={ck}';
 
-        let cookies = await new Promise(resolve => chrome.cookies.getAll({url: 'https://*.douban.com'}, resolve));
+        let cookies = [];
+        try {
+            if (typeof chrome !== 'undefined' && chrome.cookies) {
+                cookies = await new Promise(resolve => chrome.cookies.getAll({url: 'https://*.douban.com'}, resolve)) || [];
+            }
+        } catch (e) {
+            console.error("Failed to get cookies:", e);
+        }
+
         let uid, ck;
-        for (let cookie of cookies) {
-            switch (cookie.name) {
-                case 'dbcl2':
-                    uid = parseInt(cookie.value.match(/^\"(\w*):.+\"$/)[1]);
-                    break;
-                case 'ck':
-                    ck = cookie.value;
-                    break;
+        if (Array.isArray(cookies)) {
+            for (let cookie of cookies) {
+                if (!cookie || !cookie.name) continue;
+                switch (cookie.name) {
+                    case 'dbcl2':
+                        if (cookie.value) {
+                            let match = cookie.value.match(/^\"?(\w+):/);
+                            if (match) {
+                                uid = parseInt(match[1]);
+                            }
+                        }
+                        break;
+                    case 'ck':
+                        if (cookie.value) {
+                            ck = cookie.value.replace(/^\"|\"$/g, '');
+                        }
+                        break;
+                }
             }
         }
         if (uid == undefined) {

@@ -67,8 +67,11 @@ export default class Service extends EventTarget {
         this._jobQueue = new AsyncBlockingQueue();
         this._status = Service.STATE_STOPPED;
         this.lastRequest = 0;
-        this._debug = false;
-        chrome.runtime.onConnect.addListener(port => this.onConnect(port));
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onConnect) {
+            chrome.runtime.onConnect.addListener(port => this.onConnect(port));
+        } else if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.onConnect) {
+            browser.runtime.onConnect.addListener(port => this.onConnect(port));
+        }
     }
 
     toJSON() {

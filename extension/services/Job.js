@@ -73,12 +73,20 @@ export default class Job extends EventTarget {
             'ck': '',
             'dbcl2': '',
         };
-        let cookies = await new Promise(
-            resolve => chrome.cookies.getAll({url: 'https://*.douban.com'}, resolve)
-        );
-        for (let cookie of cookies) {
-            if (cookie.name in cookiesNeeded) {
-                cookiesNeeded[cookie.name] = cookie.value;
+        let cookies = [];
+        try {
+            if (typeof chrome !== 'undefined' && chrome.cookies) {
+                cookies = await new Promise(resolve => chrome.cookies.getAll({url: 'https://*.douban.com'}, resolve)) || [];
+            }
+        } catch (e) {
+            console.error("Failed to get cookies in Job:", e);
+        }
+
+        if (Array.isArray(cookies)) {
+            for (let cookie of cookies) {
+                if (cookie && cookie.name && cookie.name in cookiesNeeded) {
+                    cookiesNeeded[cookie.name] = cookie.value;
+                }
             }
         }
 
