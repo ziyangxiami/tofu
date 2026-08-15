@@ -67,10 +67,19 @@ export default class Service extends EventTarget {
         this._jobQueue = new AsyncBlockingQueue();
         this._status = Service.STATE_STOPPED;
         this.lastRequest = 0;
+        this._debug = false;
+        this._requestInterval = 1000;
         if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onConnect) {
             chrome.runtime.onConnect.addListener(port => this.onConnect(port));
         } else if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.onConnect) {
             browser.runtime.onConnect.addListener(port => this.onConnect(port));
+        }
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+            chrome.storage.onChanged.addListener((changes, areaName) => {
+                if (areaName === 'sync') {
+                    this.loadSettings();
+                }
+            });
         }
     }
 
@@ -81,7 +90,8 @@ export default class Service extends EventTarget {
             _jobQueueTasks: this._jobQueue.promises.length > 0 ? this._jobQueue.promises : [], // 保存任务队列内容
             _status: this._status,
             lastRequest: this.lastRequest,
-            _debug: this._debug
+            _debug: this._debug,
+            _requestInterval: this._requestInterval
         };
     }
 
@@ -92,6 +102,7 @@ export default class Service extends EventTarget {
         instance._status = json._status;
         instance.lastRequest = json.lastRequest;
         instance._debug = json._debug;
+        instance._requestInterval = json._requestInterval !== undefined ? json._requestInterval : 1000;
 
         // 重新初始化任务队列
         instance._jobQueue = new AsyncBlockingQueue();
@@ -111,8 +122,8 @@ export default class Service extends EventTarget {
     async loadSettings() {
         let settings = await Settings.load(SERVICE_SETTINGS);
         Settings.apply(this, settings);
-        this.logger.debug('Service settings loaded.');
-        return this;
+        this.logger.debug(`Service settings loaded. requestInterval=${this.requestInterval}ms, debug=${this.debug}`);
+        return true;
     }
 
     /**
@@ -120,6 +131,26 @@ export default class Service extends EventTarget {
      */
     get name() {
         return 'service';
+    }
+
+    /**
+     * Get request interval (ms)
+     * @returns {number}
+     */
+    get requestInterval() {
+        if (typeof this._requestInterval === 'number' && !isNaN(this._requestInterval) && this._requestInterval >= 0) {
+            return this._requestInterval;
+        }
+        return 1000;
+    }
+
+    /**
+     * Set request interval (ms)
+     * @param {number} value
+     */
+    set requestInterval(value) {
+        let parsed = parseInt(value, 10);
+        this._requestInterval = !isNaN(parsed) && parsed >= 0 ? parsed : 1000;
     }
 
     /**
@@ -489,6 +520,7 @@ export default class Service extends EventTarget {
             this._status = restoredService._status;
             this.lastRequest = restoredService.lastRequest;
             this._debug = restoredService._debug;
+            this._requestInterval = restoredService._requestInterval;
 
             console.log(`Service 状态已恢复`);
         }
@@ -535,16 +567,17 @@ export default class Service extends EventTarget {
         }
     }
 
-    static async getFetchURL(service) {
+    static getFetchURL(service) {
         let logger = service.logger;
         let lastRequest = 0;
 
         return async (resource, init = {}, continuous = false, retries = 2) => {
-            let promise =  service.continue();
-            if(promise === undefined) {
+            let promise = service.continue();
+            if (promise === undefined) {
                 console.error("promise is undefined!");
             }
-            let requestInterval = lastRequest + service.requestInterval - Date.now();
+            let interval = (service && typeof service.requestInterval === 'number') ? service.requestInterval : 1000;
+            let requestInterval = lastRequest + interval - Date.now();
 
             // 如果请求间隔大于 0，则等待
             if (!continuous && requestInterval > 0) {
@@ -558,14 +591,16 @@ export default class Service extends EventTarget {
             let fetchResolve = () => {
                 try {
                     let url = Request.prototype.isPrototypeOf(resource) ? resource.url : resource.toString();
-                    lastRequest = Date.now();
-                    console.log(`Fetching ${url}...`, resource);
+                    console.log(`Fetching ${url}... (interval: ${interval}ms)`, resource);
 
                     // 确保所有发给豆瓣的请求携带 credentials，否则会被当作未登录的机器流量拦截
                     let fetchInit = Object.assign({ credentials: 'include' }, init);
 
                     // 直接使用传入的 init 参数，不再修改 Header
-                    return fetch(resource, fetchInit).catch(e => {
+                    return fetch(resource, fetchInit).then(res => {
+                        lastRequest = Date.now();
+                        return res;
+                    }).catch(e => {
                         if (retries > 0) {
                             logger.debug(e);
                             logger.debug(`Attempt to fetch ${retries} times...`);
@@ -576,19 +611,19 @@ export default class Service extends EventTarget {
                         }
                     });
                 } catch (error) {
-                    console.error(error)
+                    console.error(error);
                     logger.error("Fetch error:", error);
                     return Promise.reject(error);
                 }
             };
-            if(promise === undefined) {
+            if (promise === undefined) {
                 console.error("then之前，promise is undefined!");
-                promise = Promise.resolve()
+                promise = Promise.resolve();
             }
             promise = promise.then(fetchResolve);
             service.dispatchEvent(new Event("progress"));
             return promise;
-        }
+        };
     }
 
 }

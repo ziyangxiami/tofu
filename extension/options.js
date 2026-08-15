@@ -135,11 +135,16 @@ class GeneralPanel {
 
         let TimeInput = class extends Control {
             set value(value) {
-                this.element.value = value / 1000;
+                let num = parseFloat(value);
+                this.element.value = !isNaN(num) ? num / 1000 : 1;
             }
 
             get value() {
-                return parseInt(parseFloat(this.element.value) * 1000);
+                let seconds = parseFloat(this.element.value);
+                if (isNaN(seconds) || seconds < 0) {
+                    seconds = 1;
+                }
+                return Math.round(seconds * 1000);
             }
         };
 
@@ -187,11 +192,11 @@ class GeneralPanel {
     async save(settings) {
         try {
             await Settings.save(settings);
-            const service = await Service.getInstance();
-            await service.loadSettings();
+            const serviceProxy = ServiceProxy.getProxy();
+            await serviceProxy.loadSettings();
             Notification.show('保存成功');
         } catch (e) {
-            console.log("保存失败", e)
+            console.log("保存失败", e);
             Notification.show('保存失败', {type: 'danger'});
         }
     }
