@@ -7,7 +7,7 @@ const URL_FORBID = 'https://www.douban.com/j/contact/addtoblacklist';
 const PAGE_SIZE = 100;
 
 
-export default class Blacklist extends Task {
+export default class MigrateBlacklist extends Task {
     async run() {
         this.total = await this.storage.blacklist.count();
         if (this.total == 0) {
@@ -15,15 +15,16 @@ export default class Blacklist extends Task {
         }
 
         let postData = new URLSearchParams();
-        postData.append('ck', this.session.cookies.ck);
+        postData.append('ck', this.session?.cookies?.ck || '');
 
         let pageCount = Math.ceil(this.total / PAGE_SIZE);
         for (let i = 0; i < pageCount; i ++) {
             let rows = await this.storage.blacklist
-                .offset(PAGE_SIZE * i).limit(PAGE_SIZE)
-                .reverse().toArray();
+                .reverse().offset(PAGE_SIZE * i).limit(PAGE_SIZE)
+                .toArray();
             for (let row of rows) {
-                let uid = row.user.id || row.user.uid;
+                let uid = row.user ? (row.user.id || row.user.uid) : '';
+                if (!uid) continue;
                 postData.set('people', uid);
                 let fetch = await this.fetch
                 let response = await fetch(URL_FORBID, {

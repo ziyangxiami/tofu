@@ -11,7 +11,7 @@ const URL_DOUMAIL_LOAD_MORE = 'https://www.douban.com/j/doumail/loadmore';
 export default class Doumail extends Task {
     async run() {
         if (this.isOtherUser) {
-            throw TaskError('不能备份其他用户的豆邮');
+            throw new TaskError('不能备份其他用户的豆邮');
         }
         let pageCount = 1;
         for (let i = 0; i < pageCount; i ++) {
@@ -20,22 +20,23 @@ export default class Doumail extends Task {
             if (response.status != 200) {
                 throw new TaskError('豆瓣服务器返回错误');
             }
-            let html =  this.parseHTML(await response.text());
+            let html = this.parseHTML(await response.text());
             try {
                 pageCount = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
             } catch (e) {}
             this.total = pageCount * PAGE_SIZE;
             for (let contact of html.querySelectorAll('.doumail-list>ul>li')) {
                 let operationAnchor = contact.querySelector('.operations>.post_link.report');
-                let userId = parseInt(operationAnchor.dataset.id);
+                let userId = operationAnchor ? parseInt(operationAnchor.dataset?.id || operationAnchor.getAttribute('data-id')) : 0;
                 isNaN(userId) && (userId = 0);
-                let contactName = operationAnchor.dataset.sname;
-                let contactUrl = operationAnchor.dataset.slink;
+                let contactName = operationAnchor ? (operationAnchor.dataset?.sname || operationAnchor.getAttribute('data-sname') || '') : '';
+                let contactUrl = operationAnchor ? (operationAnchor.dataset?.slink || operationAnchor.getAttribute('data-slink') || '') : '';
                 let contactAvatarImg = contact.querySelector('.pic img');
-                let contactAvatar = contactAvatarImg ? contactAvatarImg.src : null;
-                let time = contact.querySelector('.title>.sender>.time').innerText;
-                let abstract = contact.querySelector('.title>p').innerText;
-                let doumailUrl = contact.querySelector('.title .url').href;
+                let contactAvatar = contactAvatarImg ? (contactAvatarImg.getAttribute('src') || '') : null;
+                let time = contact.querySelector('.title>.sender>.time')?.text?.trim() || '';
+                let abstract = contact.querySelector('.title>p')?.text?.trim() || '';
+                let doumailAnchor = contact.querySelector('.title .url');
+                let doumailUrl = doumailAnchor ? (doumailAnchor.getAttribute('href') || '') : '';
                 let doumailContact = {
                     id: userId,
                     contact: {
@@ -47,14 +48,14 @@ export default class Doumail extends Task {
                     time: time,
                     url: doumailUrl,
                     abstract: abstract,
-                    rank: new Date(time).getTime(),
+                    rank: new Date(time).getTime() || 0,
                 };
                 let readMore = true;
                 for (let start = 0; readMore; start += PAGE_SIZE) {
                     let postData = new URLSearchParams();
                     postData.append('start', start);
                     postData.append('target_id', userId);
-                    postData.append('ck', this.session.cookies.ck);
+                    postData.append('ck', this.session?.cookies?.ck || '');
                     let fetch = await this.fetch
                     let response = await fetch(URL_DOUMAIL_LOAD_MORE, {
                         headers: {'X-Override-Referer': doumailUrl},
@@ -69,23 +70,22 @@ export default class Doumail extends Task {
                     if (json.err) {
                         this.logger.warning(json.err);
                     }
-                    let doumailList = document.createElement('DIV');
-                    doumailList.innerHTML = json.html;
+                    let doumailList = this.parseHTML(json.html || '');
                     let lastDate = null;
                     for (let div of doumailList.children) {
-                        if (div.className == 'split-line') {
-                            lastDate = div.innerText.trim();
-                        } else if (div.className == 'chat') {
-                            let chatId = parseInt(div.getAttribute('data'));
-                            let time = div.querySelector('.info>.time').innerText;
-                            let datetime = `${lastDate} ${time}`;
+                        if (div.classList && div.classList.contains('split-line')) {
+                            lastDate = (div.innerText || div.text || '').trim();
+                        } else if (div.classList && div.classList.contains('chat')) {
+                            let chatId = parseInt(div.getAttribute('data') || div.getAttribute('data-id'));
+                            let time = div.querySelector('.info>.time')?.text?.trim() || '';
+                            let datetime = `${lastDate || ''} ${time}`.trim();
                             let senderAvatarImg = div.querySelector('.pic img');
-                            let senderAvatar = senderAvatarImg.src;
-                            let senderName = senderAvatarImg.alt;
+                            let senderAvatar = senderAvatarImg ? (senderAvatarImg.getAttribute('src') || '') : null;
+                            let senderName = senderAvatarImg ? (senderAvatarImg.getAttribute('alt') || '') : '';
                             let senderAnchor = div.querySelector('.pic>a');
-                            let senderUrl = senderAnchor ? senderAnchor.href : null;
+                            let senderUrl = senderAnchor ? (senderAnchor.getAttribute('href') || '') : null;
                             let content = div.querySelector('.content');
-                            let contentSender = content.querySelector('div.sender');
+                            let contentSender = content ? content.querySelector('div.sender') : null;
                             contentSender && contentSender.remove();
                             let doumail = {
                                 id: chatId,
@@ -96,7 +96,7 @@ export default class Doumail extends Task {
                                     url: senderUrl,
                                 },
                                 datetime: datetime,
-                                content: content.innerHTML,
+                                content: content ? content.innerHTML : '',
                             };
                             await this.storage.doumail.put(doumail);
                         }

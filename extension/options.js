@@ -18,7 +18,7 @@ class AccountPanel {
         let cookies = [];
         try {
             if (typeof chrome !== 'undefined' && chrome.cookies) {
-                cookies = await new Promise(resolve => chrome.cookies.getAll({url: 'https://*.douban.com'}, resolve)) || [];
+                cookies = await new Promise(resolve => chrome.cookies.getAll({domain: 'douban.com'}, resolve)) || [];
             }
         } catch (e) {
             console.error("Failed to get cookies:", e);

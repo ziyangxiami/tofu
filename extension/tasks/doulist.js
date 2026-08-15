@@ -95,7 +95,8 @@ export default class Doulist extends Task {
                                     itemTypes.push(itemType.substr(8));
                                 }
                             }
-                            let itemSource = item.querySelector('.source').innerText.trim().substr(3);
+                            let sourceNode = item.querySelector('.source');
+                            let itemSource = sourceNode ? (sourceNode.innerText || sourceNode.text || '').trim().substr(3) : '';
                             let itemAbstract = item.querySelector('.abstract');
                             let commentBlockquote = item.querySelector('.comment-item>.comment');
                             let extra = {};
@@ -103,13 +104,17 @@ export default class Doulist extends Task {
                             if (itemCategory == 3055) {
                                 // 广播
                                 try {
-                                    let statusText = item.querySelector('.status-text');
+                                    let statusTextNode = item.querySelector('.status-text');
                                     let statusImages = [];
                                     for (let statusImage of item.querySelectorAll('.status-images>a')) { 
-                                        statusImages.push(statusImage.style.backgroundImage.slice(5,-2));
+                                        let styleStr = statusImage.getAttribute('style') || '';
+                                        let bgMatch = styleStr.match(/background-image:\s*url\(['"]?([^'"]+)['"]?\)/i);
+                                        if (bgMatch) {
+                                            statusImages.push(bgMatch[1]);
+                                        }
                                     }
                                     let status = {
-                                        text: statusText.innerText.trim(),
+                                        text: statusTextNode ? (statusTextNode.innerText || statusTextNode.text || '').trim() : '',
                                         images: statusImages,
                                     };
                                     extra.status = status;
@@ -125,16 +130,16 @@ export default class Doulist extends Task {
                                 can_view: addBtn.dataset.canview == 'True',
                                 is_url_subject: addBtn.dataset.isurlsubject == 'true',
                                 picture: addBtn.dataset.picture,
-                                abstract: itemAbstract ? itemAbstract.innerText : null,
+                                abstract: itemAbstract ? (itemAbstract.innerText || itemAbstract.text || '') : null,
                                 source: itemSource,
-                                comment: commentBlockquote ? commentBlockquote.innerText : null,
+                                comment: commentBlockquote ? (commentBlockquote.innerText || commentBlockquote.text || '') : null,
                                 extra: extra,
                             };
                             let row = await this.storage.doulistItem.get(itemId);
                             if (row) {
                                 let lastVersion = row.version;
                                 row.version = version;
-                                if (!this.compareDoulistItem(item, row.item)) {
+                                if (!this.compareDoulistItem(itemEntity, row.item)) {
                                     !row.history && (row.history = {});
                                     row.history[lastVersion] = row.item;
                                     row.item = itemEntity;

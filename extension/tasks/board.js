@@ -40,7 +40,7 @@ export default class Board extends Task {
             } catch (e) {}
 
             for (let li of html.querySelectorAll('#comments>.comment-item')) {
-                let messageId = parseInt(li.dataset.cid);
+                let messageId = parseInt(li.dataset?.cid || li.getAttribute('data-cid'));
                 if (messageId <= lastMessageId) {
                     totalPage = 0;
                     break;
@@ -48,7 +48,7 @@ export default class Board extends Task {
                 if (messageId > maxMessageId) {
                     maxMessageId = messageId;
                 }
-                let sendTime = li.querySelector('.pl').textContent;
+                let sendTime = li.querySelector('.pl')?.textContent?.trim() || '';
                 if (sendTime.length < 6) {
                     let datetime = new Date();
                     let year = datetime.getFullYear().toString();
@@ -60,12 +60,17 @@ export default class Board extends Task {
                 } else if (sendTime.length < 12) {
                     sendTime = (new Date()).getFullYear().toString() + ' ' + sendTime;
                 }
+                let prevImg = li.previousElementSibling ? li.previousElementSibling.querySelector('img') : null;
+                let avatarSrc = prevImg ? (prevImg.getAttribute('src') || '') : '';
+                let authorAnchor = li.querySelector('a');
+                let authorName = authorAnchor ? (authorAnchor.textContent || authorAnchor.text || '').trim() : '';
+                let authorUrl = authorAnchor ? (authorAnchor.getAttribute('href') || '') : '';
                 let row = {
                     id: messageId,
                     sender: {
-                        avatar: li.previousElementSibling.querySelector('img').src,
-                        name: li.childNodes[0].text,
-                        url: li.childNodes[0].href,
+                        avatar: avatarSrc,
+                        name: authorName,
+                        url: authorUrl,
                     },
                     created: Date.now(),
                     message: this.getMessage(li),
@@ -77,17 +82,18 @@ export default class Board extends Task {
             }
             this.step();
         }
-        await this.storage.table('version').update('board', { lastId: maxMessageId });
+        await this.storage.table('version').put({ table: 'board', version: version, lastId: maxMessageId, updated: Date.now() });
         this.complete();
     }
 
     getMessage(element) {
-        let message = element.childNodes[1].textContent.substr(4);
+        if (!element.childNodes || element.childNodes.length < 2) return '';
+        let message = (element.childNodes[1].textContent || element.childNodes[1].text || '').substr(4);
         for (let i = 2; i < element.childNodes.length; i ++) {
             let childNode = element.childNodes[i];
-            if (childNode.className == 'pl') break;
+            if (childNode.classList && childNode.classList.contains('pl')) break;
 
-            message += childNode.textContent;
+            message += (childNode.textContent || childNode.text || '');
         }
 
         return message;

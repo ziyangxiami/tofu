@@ -74,7 +74,8 @@ export default class Files extends Task {
         });
         await this.storage.transaction('rw', this.storage.album, this.storage.photo, this.storage.files, async () => {
             await this.storage.photo.each(async item => {
-                let {album} = await this.storage.album.get(item.album);
+                let albumRow = await this.storage.album.get(item.album);
+                let album = albumRow?.album || { title: '未命名相册', description: '', url: '' };
                 let meta = {
                     caption: album.title,
                     alt: item.photo.description,
@@ -98,8 +99,9 @@ export default class Files extends Task {
             await this.storage.note.each(async item => {
                 let images = this.parseHTML(item.note.fulltext).querySelectorAll('img');
                 for (let image of images) {
+                    let src = image.getAttribute('src') || image.src;
                     await this.addFile(
-                        image.src,
+                        src,
                         ['日记'],
                         {
                             caption: item.note.title,
@@ -115,8 +117,9 @@ export default class Files extends Task {
             await this.storage.review.each(async item => {
                 let images = this.parseHTML(item.review.fulltext).querySelectorAll('img');
                 for (let image of images) {
+                    let src = image.getAttribute('src') || image.src;
                     await this.addFile(
-                        image.src,
+                        src,
                         ['评论'],
                         {
                             caption: item.review.title,
@@ -132,8 +135,9 @@ export default class Files extends Task {
             await this.storage.annotation.each(async item => {
                 let images = this.parseHTML(item.annotation.fulltext).querySelectorAll('img');
                 for (let image of images) {
+                    let src = image.getAttribute('src') || image.src;
                     await this.addFile(
-                        image.src,
+                        src,
                         ['笔记'],
                         {
                             caption: item.annotation.title,
@@ -150,15 +154,15 @@ export default class Files extends Task {
                 if (item.status.images) {
                     let statusUrl = item.status.sharing_url;
                     for (let image of item.status.images) {
-                        await this.addFile(image.large.url, ['广播'], { from: statusUrl }, '广播');
-                        await this.addFile(image.normal.url, ['广播'], { from: statusUrl }, 'thumbnail');
+                        await this.addFile(image.large?.url || image.large, ['广播'], { from: statusUrl }, '广播');
+                        await this.addFile(image.normal?.url || image.normal, ['广播'], { from: statusUrl }, 'thumbnail');
                     }
                 }
                 if (item.status.reshared_status && item.status.reshared_status.images) {
                     let statusUrl = item.status.reshared_status.sharing_url;
                     for (let image of item.status.reshared_status.images) {
-                        await this.addFile(image.large.url, ['广播'], { from: statusUrl }, '广播');
-                        await this.addFile(image.normal.url, ['广播'], { from: statusUrl }, 'thumbnail');
+                        await this.addFile(image.large?.url || image.large, ['广播'], { from: statusUrl }, '广播');
+                        await this.addFile(image.normal?.url || image.normal, ['广播'], { from: statusUrl }, 'thumbnail');
                     }
                 }
             });
@@ -208,6 +212,7 @@ export default class Files extends Task {
 
             for (let row of rows) {
                 if (!row.url) {
+                    await this.storage.files.update(row.id, { save: { skip: true } });
                     this.step();
                     continue;
                 }
@@ -227,7 +232,7 @@ export default class Files extends Task {
                     throw new TaskError('Cloudinary 接口异常');
                 }
                 let savedData = await response.json();
-                if (response.status == 400 && !savedData['error']['message'].startsWith('Error in loading http')) {
+                if (response.status == 400 && !savedData?.error?.message?.startsWith('Error in loading http')) {
                     throw new TaskError('Cloudinary 接口返回错误');
                 }
                 await this.storage.files.update(row.id, {

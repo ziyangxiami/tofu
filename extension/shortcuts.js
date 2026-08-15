@@ -5,7 +5,7 @@ const SHORTCUTS_TEMPLATE = `\
 <div class="modal-background"></div>
 <div class="modal-content">
     <h1>豆伴</h1>
-    <p><a href="${chrome.runtime.getURL('index.html')}">后台</a></p>
+    <p><a href="${chrome.runtime.getURL('backup.html')}">备份管理</a></p>
 </div>
 <button class="modal-close"></button>
 `;
@@ -25,7 +25,7 @@ class Shortcuts {
             this.close();
         });
         document.addEventListener('keydown', event => {
-            if (event.code == 27) {
+            if (event.key === 'Escape' || event.code === 'Escape' || event.keyCode === 27) {
                 this.close();
             }
         });

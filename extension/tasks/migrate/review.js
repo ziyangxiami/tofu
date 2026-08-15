@@ -10,11 +10,12 @@ const PAGE_SIZE = 100;
 const WORD_COUNT_LIMIT = 140;
 
 
-export default class Review extends Task {
+export default class MigrateReview extends Task {
     getIntro(html) {
+        if (!html) return '';
         let intro = html.querySelector('div.introduction');
         if (intro) {
-            let introText = intro.innerText;
+            let introText = intro.innerText || intro.text || '';
             intro.remove();
             return introText;
         }
@@ -32,7 +33,7 @@ export default class Review extends Task {
         }
 
         let postData = new URLSearchParams();
-        postData.append('ck', this.session.cookies.ck);
+        postData.append('ck', this.session?.cookies?.ck || '');
         postData.append('is_rich', '1');
         postData.append('topic_id', '');
         postData.set('review[rating]', '');
@@ -47,7 +48,8 @@ export default class Review extends Task {
                 .toArray();
             for (let row of rows) {
                 let review = row.review;
-                let html = this.parseHTML(review.fulltext).querySelector('body');
+                let parsedHTML = this.parseHTML(review.fulltext || '');
+                let html = parsedHTML.querySelector('body') || parsedHTML;
                 let intro = this.getIntro(html);
 
                 let draft = new Draft();
@@ -58,15 +60,17 @@ export default class Review extends Task {
                     draft.addBlock('unstyled').write(''.padEnd(wordPadding, '=')).end();
                 }
 
+                let subjectId = row.subject || row.review?.subject?.id || (row.review?.subject && typeof row.review.subject === 'string' ? row.review.subject : '');
+
                 postData.set('review[introduction]', intro);
-                postData.set('review[subject_id]', row.subject);
+                postData.set('review[subject_id]', subjectId);
                 postData.set('review[title]', review.title);
                 postData.set('review[text]', JSON.stringify(draft.toArray()));
 
                 let fetch = await this.fetch
                 let response = await fetch(URL_REVIEW_PUBLISH, {
                     headers: {
-                        'X-Override-Referer': URL_REVIEW_CREATE_REFERER.replace('{subject}', row.subject),
+                        'X-Override-Referer': URL_REVIEW_CREATE_REFERER.replace('{subject}', subjectId),
                         'X-Requested-With': 'XMLHttpRequest',
                         'X-Override-Origin': 'https://www.douban.com',
                     },

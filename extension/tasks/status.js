@@ -10,7 +10,7 @@ const URL_STATUS = 'https://m.douban.com/rexxar/api/v2/status/{id}?ck={ck}&for_m
 export default class Status extends Task {
     async fetchStatusFulltext(id) {
         let url = URL_STATUS
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{id}', id);
         let fetch = await this.fetch
         let response = await fetch(url, {headers: {'X-Override-Referer': 'https://m.douban.com/mine/statuses'}});
@@ -22,7 +22,7 @@ export default class Status extends Task {
 
     async run() {
         let version = this.jobId;
-        this.total = this.targetUser.statuses_count;
+        this.total = (this.targetUser && this.targetUser.statuses_count) || 0;
         if (this.total === 0) {
             return;
         }
@@ -39,7 +39,7 @@ export default class Status extends Task {
         })
 
         let baseURL = URL_TIMELINE
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
         let count, retried = false;
@@ -50,17 +50,21 @@ export default class Status extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let json = await response.json();
+            if (!json || !json.items) {
+                break;
+            }
             count = json.items.length;
             let requestedMaxId = lastStatusId;
             for (let item of json.items) {
                 let status = item.status;
+                if (!status) continue;
                 if (status.id === requestedMaxId) {
                     continue; // 豆瓣接口 max_id 包含边界，需跳过重复的一条以防触发数据库唯一键冲突
                 }
                 item.id = parseInt(status.id);
                 item.created = Date.now();
                 lastStatusId = status.id;
-                if (status.text.length >= 140 && status.text.substr(-3, 3) === '...') {
+                if (status.text && status.text.length >= 140 && status.text.endsWith('...')) {
                     item.status = await this.fetchStatusFulltext(lastStatusId);
                 }
                 try {
@@ -82,7 +86,7 @@ export default class Status extends Task {
                 await this.storage.table('version').update('status', { lastId: item.id });
                 this.step();
             }
-        } while (count > 0 || (lastStatusId = '') === '');
+        } while (count > 0);
         this.complete();
     }
 

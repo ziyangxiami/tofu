@@ -24,12 +24,12 @@ export default class Photo extends Task {
         }
         let html = this.parseHTML(await response.text());
         let photo = html.querySelector('.mainphoto>img');
-        return photo.src;
+        return photo ? (photo.getAttribute('src') || false) : false;
     }
 
     async run() {
         let version = this.jobId;
-        this.total = this.targetUser.photo_albums_count;
+        this.total = (this.targetUser && this.targetUser.photo_albums_count) || 0;
         if (this.total == 0) {
             return;
         }
@@ -37,7 +37,7 @@ export default class Photo extends Task {
 
         let baseURL = URL_PHOTOS
             .replace('{uid}', this.targetUser.id)
-            .replace('{ck}', this.session.cookies.ck);
+            .replace('{ck}', this.session?.cookies?.ck || '');
 
         let pageCount = 1;
         for (let i = 0; i < pageCount; i ++) {
@@ -82,47 +82,51 @@ export default class Photo extends Task {
                         albumTotalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
                     } catch (e) {}
                     for (let photoAnchor of html.querySelectorAll('.photolst_photo')) {
-                        let photoId = parseInt(
-                            photoAnchor.href.match(/https:\/\/www\.douban\.com\/photos\/photo\/(\d+)\//)[1]
-                        );
+                        let photoHref = photoAnchor.getAttribute('href') || '';
+                        let match = photoHref.match(/https:\/\/www\.douban\.com\/photos\/photo\/(\d+)\//);
+                        if (!match) continue;
+                        let photoId = parseInt(match[1]);
                         let photoImg = photoAnchor.querySelector('img');
-                        let photoDescription = photoAnchor.title;
+                        let photoSrc = photoImg ? (photoImg.getAttribute('src') || '') : '';
+                        let photoDescription = photoAnchor.getAttribute('title') || '';
                         let row = await this.storage.photo.get(photoId);
                         if (row) {
                             let lastVersion = row.version;
                             row.version = version;
                             if (row.photo.description != photoDescription ||
-                                row.photo.cover != photoImg.src) {
+                                row.photo.cover != photoSrc) {
                                 !row.history && (row.history = {});
                                 row.history[lastVersion] = row.photo;
                                 row.photo.description = photoDescription;
-                                if (row.photo.cover != photoImg.src) {
+                                if (row.photo.cover != photoSrc) {
                                     if (albumPrivacy != 'public') {
-                                        let rawUrl = await this.fetchPhotoDetail(photoAnchor.href);
-                                        row.photo.raw = rawUrl || photoImg.src;
+                                        let rawUrl = await this.fetchPhotoDetail(photoHref);
+                                        row.photo.raw = rawUrl || photoSrc;
                                     } else {
-                                        row.photo.raw = photoImg.src.replace('/m/', '/l/');
+                                        row.photo.raw = photoSrc.replace('/m/', '/l/');
                                     }
-                                    row.photo.cover = photoImg.src;
+                                    row.photo.cover = photoSrc;
                                 }
                             }
                         } else {
+                            let rawUrl = photoSrc;
+                            if (albumPrivacy != 'public') {
+                                let fetchedRaw = await this.fetchPhotoDetail(photoHref);
+                                rawUrl = fetchedRaw || photoSrc;
+                            } else {
+                                rawUrl = photoSrc.replace('/m/', '/l/');
+                            }
                             row = {
                                 id: photoId,
                                 album: albumId,
                                 version: version,
                                 photo: {
-                                    url: photoAnchor.href,
-                                    cover: photoImg.src,
+                                    url: photoHref,
+                                    cover: photoSrc,
                                     description: photoDescription,
+                                    raw: rawUrl,
                                 }
-                            }
-                            if (albumPrivacy != 'public') {
-                                let rawUrl = await this.fetchPhotoDetail(photoAnchor.href);
-                                row.photo.raw = rawUrl || photoImg.src;
-                            } else {
-                                row.photo.raw = photoImg.src.replace('/m/', '/l/');
-                            }
+                            };
                         }
                         await this.storage.photo.put(row);
                     }

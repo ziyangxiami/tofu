@@ -28,14 +28,14 @@ export default class Review extends Task {
 
     async run() {
         let version = this.jobId;
-        this.total = this.targetUser.reviews_count;
+        this.total = (this.targetUser && this.targetUser.reviews_count) || 0;
         if (this.total === 0) {
             return;
         }
         await this.storage.table('version').put({table: 'review', version: version, updated: Date.now()});
 
         let baseURL = URL_REVIEWS
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
         for (let type of ['music', 'book', 'movie', 'drama', 'game']) {
@@ -47,7 +47,7 @@ export default class Review extends Task {
                     throw new TaskError('豆瓣服务器返回错误');
                 }
                 let json = await response.json();
-                pageCount = Math.ceil(json.total / PAGE_SIZE);
+                pageCount = Math.ceil((parseInt(json.total) || 0) / PAGE_SIZE);
                 for (let review of json.reviews) {
                     let fulltext = await this.fetchReview(review.url);
                     let row = await this.storage.review.get(parseInt(review.id));

@@ -56,16 +56,22 @@ export default class Job extends EventTarget {
 
         let response = await fetch(URL_MINE);
         if (response.redirected) {
-            window.open(response.url);
+            if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) {
+                chrome.tabs.create({ url: response.url });
+            }
             throw new TaskError('未登录豆瓣');
         }
         let bodyElement = Task.parseHTML(await response.text(), URL_MINE);
         let inputElement = bodyElement.querySelector('#user');
-        let username = inputElement.getAttribute('data-name');
-        let uid = inputElement.getAttribute('value');
+        if (!inputElement) {
+            throw new TaskError('无法读取豆瓣用户信息，请确认是否已在浏览器中登录。');
+        }
+        let username = inputElement.getAttribute('data-name') || '';
+        let uid = inputElement.getAttribute('value') || '';
         let homepageLink = bodyElement.querySelector('.profile .detail .basic-info>a');
-        let homepageURL = homepageLink.getAttribute('href');
-        let userSymbol = homepageURL.match(/\/people\/(.+)/).pop();
+        let homepageURL = homepageLink ? homepageLink.getAttribute('href') : '';
+        let match = homepageURL ? homepageURL.match(/\/people\/([^\/]+)/) : null;
+        let userSymbol = match ? match[1] : (uid || '');
         let cookiesNeeded = {
             'ue': '',
             'bid': '',
@@ -76,7 +82,7 @@ export default class Job extends EventTarget {
         let cookies = [];
         try {
             if (typeof chrome !== 'undefined' && chrome.cookies) {
-                cookies = await new Promise(resolve => chrome.cookies.getAll({url: 'https://*.douban.com'}, resolve)) || [];
+                cookies = await new Promise(resolve => chrome.cookies.getAll({ domain: 'douban.com' }, resolve)) || [];
             }
         } catch (e) {
             console.error("Failed to get cookies in Job:", e);
@@ -182,7 +188,6 @@ export default class Job extends EventTarget {
         let fetch = Service.getFetchURL(this._service);
         // 将任务添加到队列中
         for (let task of this._tasks) {
-            this._currentTask = task;
             task.init(
                 fetch,
                 logger,
@@ -205,7 +210,9 @@ export default class Job extends EventTarget {
         // 等待所有任务完成
         await Promise.all(activePromises);
 
-        storage.local.close();
+        try {
+            storage.local.close();
+        } catch (e) {}
         logger.debug('Close local database');
         this._currentTask = null;
         this._isRunning = false;
@@ -217,11 +224,14 @@ export default class Job extends EventTarget {
     async runTaskQueue(queue, logger) {
         while (!queue.isEmpty()) {
             let task = await queue.dequeue();
+            this._currentTask = task;
             try {
                 await task.run();
             } catch (e) {
-                console.error(e)
-                logger.error('Fail to run task:' + e);
+                console.error(e);
+                logger.error(`Fail to run task [${task.name || task.constructor.name}]: ` + e);
+                if (!this._failedTasks) this._failedTasks = [];
+                this._failedTasks.push({ task: task.name || task.constructor.name, error: e.toString() });
             }
         }
     }

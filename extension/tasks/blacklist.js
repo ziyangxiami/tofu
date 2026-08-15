@@ -7,11 +7,11 @@ const URL_USER_INFO = 'https://m.douban.com/rexxar/api/v2/user/{uid}?ck={ck}&for
 const PAGE_SIZE = 72;
 
 
-export default class Following extends Task {
+export default class Blacklist extends Task {
 
     async run() {
         if (this.isOtherUser) {
-            throw TaskError('不能备份其他用户的黑名单');
+            throw new TaskError('不能备份其他用户的黑名单');
         }
 
         await this.storage.table('version').put({table: 'blacklist', version: this.jobId, updated: Date.now()});
@@ -24,22 +24,26 @@ export default class Following extends Task {
             if (response.status !== 200) {
                 throw new TaskError('豆瓣服务器返回错误');
             }
-            let html =  this.parseHTML(await response.text());
+            let html = this.parseHTML(await response.text());
             try {
                 this.total = totalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
             } catch (e) {}
             for (let dl of html.querySelectorAll('.obss.namel>dl')) {
                 let avatar = dl.querySelector('.imgg');
-                let idMatch = avatar.src.match(/\/icon\/u(\d+)\-(\d+)\.jpg$/), idText;
-                let userLink = dl.querySelector('.nbg').href;
-                let uid = userLink.match(/https:\/\/www\.douban\.com\/people\/(.+)\//)[1];
+                let avatarSrc = avatar ? (avatar.getAttribute('src') || '') : '';
+                let avatarAlt = avatar ? (avatar.getAttribute('alt') || '') : '';
+                let idMatch = avatarSrc.match(/\/icon\/u(\d+)\-(\d+)\.jpg$/), idText;
+                let userLink = dl.querySelector('.nbg')?.getAttribute('href') || '';
+                let uidMatch = userLink.match(/\/people\/([^\/]+)/);
+                let uid = uidMatch ? uidMatch[1] : '';
                 if (idMatch) {
                     idText = idMatch[1];
-                } else {
+                } else if (uid) {
+                    let ck = this.session?.cookies?.ck || '';
                     let url = URL_USER_INFO
-                        .replace('{ck}', this.session.cookies.ck)
+                        .replace('{ck}', ck)
                         .replace('{uid}', uid);
-                    let fetch = await this.fetch
+                    let fetch = await this.fetch;
                     let response = await fetch(url, {headers: {'X-Override-Referer': 'https://www.douban.com/'}});
                     if (response.status != 200) {
                         idText = null;
@@ -51,11 +55,11 @@ export default class Following extends Task {
                 let row = {
                     version: this.jobId,
                     user: {
-                        avatar: avatar.src,
+                        avatar: avatarSrc,
                         id: idText,
-                        name: avatar.alt,
+                        name: avatarAlt,
                         uid: uid,
-                        uri: 'douban://douban.com/user/' + idText,
+                        uri: idText ? ('douban://douban.com/user/' + idText) : '',
                         url: userLink,
                     }
                 };

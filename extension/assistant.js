@@ -497,8 +497,13 @@ class Assistant {
         if (this.silent || this._hidden) return this;
         let audio = `media/${name}.mp3`;
         let speaker = this._elementRoot.querySelector('.speaker');
-        speaker.src = chrome.runtime.getURL(audio);
-        speaker.play();
+        if (speaker) {
+            speaker.src = chrome.runtime.getURL(audio);
+            let playPromise = speaker.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(() => {});
+            }
+        }
         return this;
     }
 

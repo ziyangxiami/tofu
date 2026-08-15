@@ -12,10 +12,11 @@ export default class Annotation extends Task {
         let fetch = await this.fetch
         let response = await fetch(url);
         if (response.status !== 200) {
-            return;
+            return '';
         }
         let html = this.parseHTML(await response.text());
-        return html.querySelector('#link-report').innerHTML;
+        let node = html.querySelector('#link-report') || html.querySelector('.article') || html.querySelector('.annotation-content');
+        return node ? node.innerHTML : '';
     }
 
     async run() {
@@ -23,7 +24,7 @@ export default class Annotation extends Task {
         await this.storage.table('version').put({table: 'annotation', version: version, updated: Date.now()});
 
         let baseURL = URL_ANNOTATIONS
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
         let pageCount = 1;
@@ -34,8 +35,8 @@ export default class Annotation extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let json = await response.json();
-            this.total = parseInt(json.total);
-            pageCount = Math.ceil(json.total / PAGE_SIZE);
+            this.total = parseInt(json.total) || 0;
+            pageCount = Math.ceil((parseInt(json.total) || 0) / PAGE_SIZE);
             for (let collection of json.collections) {
                 let subject = collection.subject;
                 for (let annotation of collection.annotations) {

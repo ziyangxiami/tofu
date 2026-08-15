@@ -21,7 +21,7 @@ import MigrateBlacklist from "../tasks/migrate/blacklist.js";
 import MigrateInterest from "../tasks/migrate/interest.js";
 import MigrateNote from "../tasks/migrate/note.js";
 import MigrateReview from "../tasks/migrate/review.js";
-import Follow from "../tasks/migrate/follow.js";
+import MigrateFollow from "../tasks/migrate/follow.js";
 
 export function taskFromJSON(json, fetch, logger, storage) {
     // 维护一个子类映射
@@ -45,7 +45,8 @@ export function taskFromJSON(json, fetch, logger, storage) {
         MigrateInterest: MigrateInterest,
         MigrateNote: MigrateNote,
         MigrateReview: MigrateReview,
-        Follow: Follow
+        MigrateFollow: MigrateFollow,
+        Follow: MigrateFollow
     };
 
     const TaskClass = taskClasses[json.taskType] || Task; // 找到正确的类，默认是 Task

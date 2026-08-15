@@ -11,7 +11,7 @@ const PAGE_SIZE = 100;
 const WORD_COUNT_LIMIT = 10;
 
 
-export default class Annotation extends Task {
+export default class MigrateAnnotation extends Task {
     async getInitialData(createURL) {
         let fetch = await this.fetch
         let response = await fetch(createURL);
@@ -21,21 +21,30 @@ export default class Annotation extends Task {
             throw new TaskError('Cannot find "nid" value.');
         }
         
-        let script = html.querySelectorAll('script')[2];
-        let match = script.text.match(/name: 'upload_auth_token',\s    value: '([\s\S]*?)'/m);
-        if (!match) {
+        let nid = input.getAttribute('value') || input.value;
+        let scripts = html.querySelectorAll('script');
+        let uploadAuthToken = '';
+        for (let script of scripts) {
+            let scriptText = script.text || script.textContent || '';
+            let match = scriptText.match(/name:\s*'upload_auth_token',\s*value:\s*'([\s\S]*?)'/m) || scriptText.match(/upload_auth_token['"]?\s*:\s*['"]([^'"]+)['"]/);
+            if (match) {
+                uploadAuthToken = match[1];
+                break;
+            }
+        }
+        if (!uploadAuthToken) {
             throw new TaskError('Cannot find upload auth token.');
         }
 
         return {
-            nid: input.value,
-            uploadAuthToken: match[1],
+            nid: nid,
+            uploadAuthToken: uploadAuthToken,
         };
     }
 
     async uploadImages(draft, uploadAuthToken, uploadURL) {
         let uploadForm = new FormData();
-        uploadForm.append('ck', this.session.cookies.ck);
+        uploadForm.append('ck', this.session?.cookies?.ck || '');
         uploadForm.append('upload_auth_token', uploadAuthToken);
 
         for (let i in draft.entities) {
@@ -44,7 +53,9 @@ export default class Annotation extends Task {
             let entityData = entity.data;
             let fetch = await this.fetch
             let imageResponse = await fetch(entityData.src, {
-                'X-Override-Referer': 'https://www.douban.com/',
+                headers: {
+                    'X-Override-Referer': 'https://www.douban.com/',
+                }
             }, true);
             let imageBlob = await imageResponse.blob();
             let imageURL = new URL(entityData.src);

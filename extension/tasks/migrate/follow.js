@@ -7,7 +7,7 @@ const URL_FOLLOW = 'https://www.douban.com/j/contact/addcontact';
 const PAGE_SIZE = 100;
 
 
-export default class Follow extends Task {
+export default class MigrateFollow extends Task {
     async run() {
         this.total = await this.storage.following.count();
         if (this.total == 0) {
@@ -15,15 +15,16 @@ export default class Follow extends Task {
         }
 
         let postData = new URLSearchParams();
-        postData.append('ck', this.session.cookies.ck);
+        postData.append('ck', this.session?.cookies?.ck || '');
 
         let pageCount = Math.ceil(this.total / PAGE_SIZE);
         for (let i = 0; i < pageCount; i ++) {
             let rows = await this.storage.following
-                .offset(PAGE_SIZE * i).limit(PAGE_SIZE)
-                .reverse().toArray();
+                .reverse().offset(PAGE_SIZE * i).limit(PAGE_SIZE)
+                .toArray();
             for (let row of rows) {
-                let uid = row.user.id || row.user.uid;
+                let uid = row.user ? (row.user.id || row.user.uid) : '';
+                if (!uid) continue;
                 postData.set('people', uid);
                 let fetch = await this.fetch
                 let response = await fetch(URL_FOLLOW, {

@@ -1,7 +1,7 @@
 'use strict';
 import Settings from './settings.js';
 import Storage from './storage.js';
-import Job from './services/job.js';
+import Job from './services/Job.js';
 import Task from "./services/Task.js";
 import AsyncBlockingQueue from "./services/AsyncBlockingQueue.js";
 import StateChangeEvent from "./services/StateChangeEvent.js";
@@ -86,7 +86,7 @@ export default class Service extends EventTarget {
     toJSON() {
         return {
             _currentJob: this._currentJob ? this._currentJob.toJSON() : null, // 序列化当前任务
-            _ports: Array.from(this._ports.entries()), // 将 Map 转换为数组
+            _ports: [], // 运行时 Port 实例不可序列化
             _jobQueueTasks: this._jobQueue.promises.length > 0 ? this._jobQueue.promises : [], // 保存任务队列内容
             _status: this._status,
             lastRequest: this.lastRequest,
@@ -167,16 +167,25 @@ export default class Service extends EventTarget {
      */
     set debug(value) {
         this._debug = value;
+        let logger = this.logger;
         if (this._debug) {
-            let logger = this.logger;
             logger.level = logger.LEVEL_DEBUG;
-            logger.addEventListener('log', event => {
-                let entry = event.detail;
-                let datetime = new Date(entry.time).toISOString();
-                console.log(`[${datetime}] ${entry.levelName}: ${entry.message}`);
-                // Broadcast to UI via dispatcher override
-                this.dispatchEvent(new CustomEvent('log', { detail: entry }));
-            })
+            if (!this._logListener) {
+                this._logListener = event => {
+                    let entry = event.detail;
+                    let datetime = new Date(entry.time).toISOString();
+                    console.log(`[${datetime}] ${entry.levelName}: ${entry.message}`);
+                    // Broadcast to UI via dispatcher override
+                    this.dispatchEvent(new CustomEvent('log', { detail: entry }));
+                };
+                logger.addEventListener('log', this._logListener);
+            }
+        } else {
+            logger.level = logger.LEVEL_INFO;
+            if (this._logListener) {
+                logger.removeEventListener('log', this._logListener);
+                this._logListener = null;
+            }
         }
     }
 

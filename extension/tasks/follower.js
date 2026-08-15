@@ -13,7 +13,7 @@ const URL_FOLLOWERS_OTHER_USER = 'https://www.douban.com/people/{uid}/rev_contac
 export default class Follower extends Task {
     async crawlByApi() {
         let baseURL = URL_FOLLOWERS
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
         let pageCount = 1;
@@ -44,31 +44,36 @@ export default class Follower extends Task {
             if (response.status !== 200) {
                 throw new TaskError('豆瓣服务器返回错误');
             }
-            let html =  this.parseHTML(await response.text());
+            let html = this.parseHTML(await response.text());
             try {
                 totalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
             } catch (e) {}
             for (let li of html.querySelectorAll('.user-list>li')) {
-                let idText = li.id.substr(1);
+                let idText = li.id ? li.id.substr(1) : '';
                 let avatar = li.querySelector('.face');
-                let userLink = li.querySelector('.info>h3>a').href;
+                let avatarSrc = avatar ? (avatar.getAttribute('src') || '') : '';
+                let avatarAlt = avatar ? (avatar.getAttribute('alt') || '') : '';
+                let userAnchor = li.querySelector('.info>h3>a');
+                let userLink = userAnchor ? (userAnchor.getAttribute('href') || '') : '';
                 let loc = null;
                 let userInfo = li.querySelector('.info>p');
-                if (userInfo.childElementCount === 3) {
-                    loc = { name: userInfo.firstChild.textContent.trim() };
+                if (userInfo && userInfo.children && userInfo.children.length === 3) {
+                    loc = { name: (userInfo.firstChild?.textContent || userInfo.firstChild?.text || '').trim() };
                 }
-                let followInfo = userInfo.querySelectorAll('b');
-                let followers = followInfo[0].innerText;
-                let following = followInfo[1].innerText;
+                let followInfo = userInfo ? userInfo.querySelectorAll('b') : [];
+                let followers = followInfo[0] ? (followInfo[0].innerText || followInfo[0].text || '') : '';
+                let following = followInfo[1] ? (followInfo[1].innerText || followInfo[1].text || '') : '';
+                let uidMatch = userLink.match(/\/people\/([^\/]+)/);
+                let uid = uidMatch ? uidMatch[1] : '';
 
                 let row = {
                     version: this.jobId,
                     user: {
-                        avatar: avatar.src,
+                        avatar: avatarSrc,
                         id: idText,
                         loc: loc,
-                        name: avatar.alt,
-                        uid: userLink.match(/https:\/\/www\.douban\.com\/people\/(.+)\//)[1],
+                        name: avatarAlt,
+                        uid: uid,
                         uri: 'douban://douban.com/user/' + idText,
                         url: userLink,
                         followers_count: followers,
@@ -93,23 +98,26 @@ export default class Follower extends Task {
             if (response.status !== 200) {
                 throw new TaskError('豆瓣服务器返回错误');
             }
-            let html =  this.parseHTML(await response.text());
+            let html = this.parseHTML(await response.text());
             try {
                 totalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
             } catch (e) {}
             for (let anchor of html.querySelectorAll('.obu .nbg')) {
                 let avatar = anchor.querySelector('img');
-                let userLink = anchor.href;
-                let matches = avatar.src.match(/\/icon\/u(\d+)-\d+.jpg$/);
+                let avatarSrc = avatar ? (avatar.getAttribute('src') || '') : '';
+                let avatarAlt = avatar ? (avatar.getAttribute('alt') || '') : '';
+                let userLink = anchor.getAttribute('href') || '';
+                let matches = avatarSrc.match(/\/icon\/u(\d+)-\d+.jpg$/);
                 let idText = matches ? matches[1] : null;
-                let uid = userLink.match(/https:\/\/www\.douban\.com\/people\/(.+)\//)[1];
+                let uidMatch = userLink.match(/\/people\/([^\/]+)/);
+                let uid = uidMatch ? uidMatch[1] : '';
 
                 let row = {
                     version: this.jobId,
                     user: {
-                        avatar: avatar.src,
+                        avatar: avatarSrc,
                         id: idText,
-                        name: avatar.alt,
+                        name: avatarAlt,
                         uid: uid,
                         uri: 'douban://douban.com/user/' + (idText || uid),
                         url: userLink,
@@ -122,7 +130,7 @@ export default class Follower extends Task {
     }
 
     async run() {
-        this.total = this.targetUser.followers_count;
+        this.total = (this.targetUser && this.targetUser.followers_count) || 0;
         if (this.total === 0) {
             return;
         }

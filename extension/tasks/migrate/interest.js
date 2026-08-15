@@ -20,7 +20,7 @@ const MARKS = {
 const PAGE_SIZE = 100;
 
 
-export default class Note extends Task {
+export default class MigrateInterest extends Task {
     async run() {
         this.total = await this.storage.interest.count();
         if (this.total == 0) {
@@ -28,7 +28,7 @@ export default class Note extends Task {
         }
 
         let postData = new URLSearchParams();
-        postData.append('ck', this.session.cookies.ck);
+        postData.append('ck', this.session?.cookies?.ck || '');
         postData.append('foldcollect', 'F');
 
         let pageCount = Math.ceil(this.total / PAGE_SIZE);
@@ -40,11 +40,15 @@ export default class Note extends Task {
                 let interest = row.interest;
                 postData.set('rating', interest.rating ? interest.rating.value : '');
                 postData.set('interest', MARKS[row.status]);
-                postData.set('tags', interest.tags ? interest.tags.join(' ') : '');
-                postData.set('comment', interest.comment + ' @' + interest.create_time);
+                postData.set('tags', Array.isArray(interest.tags) ? interest.tags.join(' ') : (interest.tags ? String(interest.tags) : ''));
+                let commentStr = (interest.comment ? interest.comment + ' ' : '') + (interest.create_time ? `@${interest.create_time}` : '');
+                postData.set('comment', commentStr.trim());
 
                 let fetch = await this.fetch
-                let response = await fetch(URL_INTEREST[row.type].replace('{subject_id}', row.subject), {
+                let targetURL = URL_INTEREST[row.type] ? URL_INTEREST[row.type].replace('{subject_id}', row.subject) : null;
+                if (!targetURL) continue;
+
+                let response = await fetch(targetURL, {
                     headers: {
                         'X-Override-Referer': 'https://www.douban.com/',
                         'X-Requested-With': 'XMLHttpRequest',

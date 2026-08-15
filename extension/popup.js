@@ -1,4 +1,4 @@
-import Service from "./service.js";
+import ServiceProxy from './services/ServiceProxy.js';
 
 const URL_OPTIONS = chrome.runtime.getURL('options.html');
 const URL_ABOUT = URL_OPTIONS + '#about';
@@ -45,41 +45,46 @@ class PopupMenu {
     }
 
     disable(name) {
-        this.getItem(name).setAttribute('disabled', true);
+        let item = this.getItem(name);
+        if (item) item.setAttribute('disabled', true);
     }
 
     enable(name) {
-        this.getItem(name).removeAttribute('disabled');
+        let item = this.getItem(name);
+        if (item) item.removeAttribute('disabled');
     }
 
     static async render() {
-        let service = await Service.getInstance();
+        let service = ServiceProxy.getProxy();
         let menu = new PopupMenu('.menu', service);
 
-        // 根据状态启用/禁用按钮
-        switch (service.status) {
-            case Service.STATE_STOPPED:
-                menu.enable('Start');
-                menu.disable('Stop');
-                break;
+        let status = 0;
+        try {
+            status = await service.getProperty('status');
+        } catch (e) {
+            console.error('Failed to get status:', e);
+        }
 
-            case Service.STATE_START_PENDING:
-            case Service.STATE_RUNNING:
-                menu.disable('Start');
-                menu.enable('Stop');
-                break;
-
-            default:
-                break;
+        // 根据状态启用/禁用按钮 (0: STATE_STOPPED, 1: STATE_START_PENDING, 2: STATE_RUNNING, 3: STATE_STOP_PENDING)
+        if (status === 0) {
+            menu.enable('Start');
+            menu.disable('Stop');
+        } else {
+            menu.disable('Start');
+            menu.enable('Stop');
         }
 
         // 绑定点击事件
-        Zepto('.menu').on('click', '.menu-item', event => {
+        Zepto('.menu').on('click', '.menu-item', async event => {
             console.log('Button clicked:', event.currentTarget.getAttribute('name'));
             if (event.currentTarget.hasAttribute('disabled')) return false;
             let handle = menu['click' + event.currentTarget.getAttribute('name')];
             if (!handle) return false;
-            handle.apply(menu, [event]);
+            try {
+                await handle.apply(menu, [event]);
+            } catch (e) {
+                console.error(e);
+            }
             setTimeout(() => {
                 window.close();
             }, 100);

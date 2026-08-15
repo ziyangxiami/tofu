@@ -9,11 +9,12 @@ const URL_NOTE_CREATE_REFERER = 'https://www.douban.com/note/create';
 const PAGE_SIZE = 100;
 
 
-export default class Note extends Task {
+export default class MigrateNote extends Task {
     getIntro(html) {
+        if (!html) return '';
         let intro = html.querySelector('div.introduction');
         if (intro) {
-            let introText = intro.innerText;
+            let introText = intro.innerText || intro.text || '';
             intro.remove();
             return introText;
         }
@@ -27,7 +28,7 @@ export default class Note extends Task {
         }
 
         let postData = new URLSearchParams();
-        postData.append('ck', this.session.cookies.ck);
+        postData.append('ck', this.session?.cookies?.ck || '');
         postData.append('is_rich', '1');
         postData.append('note_id', '');
         postData.append('note_privacy', 'X');
@@ -40,7 +41,8 @@ export default class Note extends Task {
                 .toArray();
             for (let row of rows) {
                 let note = row.note;
-                let html = this.parseHTML(note.fulltext).querySelector('body');
+                let parsedHTML = this.parseHTML(note.fulltext || '');
+                let html = parsedHTML.querySelector('body') || parsedHTML;
                 let intro = this.getIntro(html);
 
                 let draft = new Draft();

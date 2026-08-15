@@ -12,22 +12,23 @@ export default class Note extends Task {
         let fetch = await this.fetch
         let response = await fetch(url);
         if (response.status != 200) {
-            return;
+            return '';
         }
         let html = this.parseHTML(await response.text());
-        return html.querySelector('#link-report>.note').innerHTML;
+        let node = html.querySelector('#link-report>.note') || html.querySelector('#link-report') || html.querySelector('.note-content');
+        return node ? node.innerHTML : '';
     }
 
     async run() {
         let version = this.jobId;
-        this.total = this.targetUser.notes_count;
+        this.total = (this.targetUser && this.targetUser.notes_count) || 0;
         if (this.total == 0) {
             return;
         }
         await this.storage.table('version').put({table: 'note', version: version, updated: Date.now()});
 
         let baseURL = URL_NOTES
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
         let pageCount = 1;
@@ -38,7 +39,7 @@ export default class Note extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let json = await response.json();
-            pageCount = Math.ceil(json.total / PAGE_SIZE);
+            pageCount = Math.ceil((parseInt(json.total) || 0) / PAGE_SIZE);
             for (let note of json.notes) {
                 let row = await this.storage.note.get(parseInt(note.id));
                 if (row) {

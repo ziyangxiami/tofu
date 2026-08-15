@@ -10,15 +10,28 @@ export default class ServiceProxy {
     constructor(port) {
         let eventTarget = new EventTarget();
         let callIdCounter = 1;
+        let pendingCalls = new Map();
         
         // Listen to events from the port
         port.onMessage.addListener(message => {
             if (message.type === 'syscall') {
-                eventTarget.dispatchEvent(new CustomEvent(message.id, {detail: message.return}));
+                eventTarget.dispatchEvent(new CustomEvent(message.id, {
+                    detail: { return: message.return, error: message.error }
+                }));
             } else if (message.type) {
                 // Forward events for UI updates
-                eventTarget.dispatchEvent(new CustomEvent(message.type, {detail: message.detail !== undefined ? message.detail : message}));
+                eventTarget.dispatchEvent(new CustomEvent(message.type, {
+                    detail: message.detail !== undefined ? message.detail : message
+                }));
             }
+        });
+
+        port.onDisconnect.addListener(() => {
+            const err = new Error('Service Worker 连接已断开');
+            for (let [callId, reject] of pendingCalls.entries()) {
+                reject(err);
+            }
+            pendingCalls.clear();
         });
 
         // Add standard EventTarget listener capability to proxy
@@ -50,8 +63,16 @@ export default class ServiceProxy {
                             method: propName, 
                             isProperty: true
                         });
-                        return new Promise((resolve) => {
-                            target.originalAddEventListener(callId, event => resolve(event.detail), {once: true});
+                        return new Promise((resolve, reject) => {
+                            pendingCalls.set(callId, reject);
+                            target.originalAddEventListener(callId, event => {
+                                pendingCalls.delete(callId);
+                                if (event.detail && event.detail.error) {
+                                    reject(new Error(event.detail.error));
+                                } else {
+                                    resolve(event.detail ? event.detail.return : undefined);
+                                }
+                            }, {once: true});
                         });
                     }
                 }
@@ -65,8 +86,16 @@ export default class ServiceProxy {
                         method: property,
                         args: args
                     });
-                    return new Promise((resolve) => {
-                        target.originalAddEventListener(callId, event => resolve(event.detail), {once: true});
+                    return new Promise((resolve, reject) => {
+                        pendingCalls.set(callId, reject);
+                        target.originalAddEventListener(callId, event => {
+                            pendingCalls.delete(callId);
+                            if (event.detail && event.detail.error) {
+                                reject(new Error(event.detail.error));
+                            } else {
+                                resolve(event.detail ? event.detail.return : undefined);
+                            }
+                        }, {once: true});
                     });
                 }
             }

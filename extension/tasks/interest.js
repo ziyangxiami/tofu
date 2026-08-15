@@ -11,7 +11,7 @@ const URL_TOTAL = 'https://m.douban.com/rexxar/api/v2/user/{uid}/interests?ck={c
 export default class Interest extends Task {
     async getTotal() {
         let totalURL = URL_TOTAL
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
         let fetch = await this.fetch
         let response = await fetch(totalURL, {headers: {'X-Override-Referer': 'https://m.douban.com/mine/'}});
@@ -19,10 +19,11 @@ export default class Interest extends Task {
             throw new TaskError('豆瓣服务器返回错误');
         }
         let json = await response.json();
-        return parseInt(json.total);
+        return parseInt(json.total) || 0;
     }
 
     compareInterest(l, r) {
+        if (!l || !r) return false;
         if (l.status !== r.status) return false;
         if (l.comment !== r.comment) return false;
         if (l.rating !== r.rating) {
@@ -34,7 +35,9 @@ export default class Interest extends Task {
                 return false;
             }
         }
-        if (l.tags.sort().toString() !== r.tags.sort().toString()) return false;
+        let lTags = Array.isArray(l.tags) ? [...l.tags].sort().toString() : (l.tags ? String(l.tags) : '');
+        let rTags = Array.isArray(r.tags) ? [...r.tags].sort().toString() : (r.tags ? String(r.tags) : '');
+        if (lTags !== rTags) return false;
         return true;
     }
 
@@ -44,7 +47,7 @@ export default class Interest extends Task {
             console.warn("Empty interest object received.");
             return;
         }
-        let subjectId = parseInt(interest.subject.id)
+        let subjectId = parseInt(interest.subject?.id || 0);
         let interestId = parseInt(interest.id);
         let row = await this.storage.interest.get({ subject: subjectId });
         if (row) {
@@ -87,7 +90,7 @@ export default class Interest extends Task {
         await this.storage.table('version').put({table: 'interest', version: version, updated: Date.now()});
 
         let baseURL = URL_INTERESTS
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
         // for (let type of ['movie']) {

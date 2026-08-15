@@ -150,7 +150,7 @@ class TaskModal {
     }
 
     async createJob(targetUserId = null) {
-        let checkedTasks = this.element.querySelectorAll('input[name="task"]:checked');
+        let checkedTasks = this.element.querySelectorAll('input[name="task"]:checked, input[name="advanced-task"]:checked');
         if (checkedTasks.length === 0) {
             alert('请勾选要备份的项目。');
             return null;
@@ -165,9 +165,6 @@ class TaskModal {
         console.log("createJob tasks", tasks)
         const service = ServiceProxy.getProxy();
         console.log("createJob service", service)
-        // 延时 3 秒
-        // await new Promise(resolve => setTimeout(resolve, 3000));
-        // console.log("等待3s后")
         let job = await service.createJob(targetUserId, null, tasks);
         return job;
     }
@@ -181,7 +178,8 @@ class TaskModal {
     }
 
     get targetUserId() {
-        let matches = this.userHomepageInput.value.match(/^https:\/\/www\.douban\.com\/people\/([^\/]+)\/?$/);
+        let val = (this.userHomepageInput.value || '').trim();
+        let matches = val.match(/(?:https?:\/\/)?(?:[a-zA-Z0-9_-]+\.)?douban\.com\/people\/([^\/\?#]+)/i);
         if (matches) {
             return matches[1];
         }

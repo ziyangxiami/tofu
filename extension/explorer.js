@@ -2,7 +2,7 @@
 import TabPanel from './ui/tab.js';
 import Paginator from './ui/paginator.js';
 import Storage from './storage.js';
-import Service from "./service.js";
+import ServiceProxy from "./services/ServiceProxy.js";
 
 
 const PAGE_SIZE = 50;
@@ -77,7 +77,11 @@ class Panel {
         this.container = container;
         this.page = page;
         this.pageSize = pageSize;
-        this.userId = parseInt(location.search.substr(1));
+        let rawId = location.search.replace(/^\?/, '');
+        this.userId = parseInt(rawId, 10);
+        if (isNaN(this.userId)) {
+            console.warn('未指定有效用户 ID');
+        }
         this.clear();
         $(container).on(
             'click',
@@ -1480,10 +1484,16 @@ class ExportModal {
 </div>`
             );
             $loading.appendTo(document.body);
-            let exporter = new Exporter();
-            await exporter.export(items);
-            exporter.save();
-            $loading.remove();
+            try {
+                let exporter = new Exporter();
+                await exporter.export(items);
+                exporter.save();
+            } catch (err) {
+                console.error('导出 Excel 失败:', err);
+                alert('导出失败: ' + err.message);
+            } finally {
+                $loading.remove();
+            }
         });
         return modal;
     }
@@ -1534,6 +1544,7 @@ class Exporter {
                     .reverse();
                 let data = [['标题', '简介', '豆瓣评分', '链接', '创建时间', '我的评分', '标签', '评论', '可见性']];
                 await collection.each(row => {
+                    if (!row || !row.interest) return;
                     let {
                         subject,
                         tags,
@@ -1542,15 +1553,17 @@ class Exporter {
                         create_time,
                         is_private
                     } = row.interest;
+                    let ratingStr = subject?.rating?.value ? subject.rating.value.toFixed(1) : (subject?.null_rating_reason || '');
+                    let tagsStr = Array.isArray(tags) ? tags.join(',') : (tags ? String(tags) : '');
                     data.push([
-                        subject.title,
-                        subject.card_subtitle,
-                        subject.rating ? subject.rating.value.toFixed(1) : subject.null_rating_reason,
-                        subject.url,
-                        create_time,
+                        subject?.title || '',
+                        subject?.card_subtitle || '',
+                        ratingStr,
+                        subject?.url || '',
+                        create_time || '',
                         rating ? rating.value : '',
-                        tags.toString(),
-                        comment,
+                        tagsStr,
+                        comment || '',
                         is_private ? "private" : "public"
                     ]);
                 });
@@ -1568,6 +1581,7 @@ class Exporter {
                 .reverse();
             let data = [['标题', '评论对象', '链接', '创建时间', '我的评分', '类型', '内容']];
             await collection.each(row => {
+                if (!row || !row.review) return;
                 let {
                     subject,
                     url,
@@ -1578,13 +1592,13 @@ class Exporter {
                     type_name
                 } = row.review;
                 data.push([
-                    title,
-                    `《${subject.title}》`,
-                    url,
-                    create_time,
+                    title || '',
+                    subject?.title ? `《${subject.title}》` : '',
+                    url || '',
+                    create_time || '',
                     rating ? rating.value : '',
-                    type_name,
-                    fulltext,
+                    type_name || '',
+                    fulltext || '',
                 ]);
             });
             let worksheet = XLSX.utils.aoa_to_sheet(data);
@@ -1597,6 +1611,7 @@ class Exporter {
             .reverse();
         let data = [['书名', '章节', '页码', '链接', '创建时间', '我的评分', '内容']];
         await collection.each(row => {
+            if (!row || !row.annotation) return;
             let {
                 subject,
                 chapter,
@@ -1608,12 +1623,12 @@ class Exporter {
             } = row.annotation;
             data.push([
                 subject ? subject.title : '',
-                chapter,
-                page,
-                url,
-                create_time,
+                chapter || '',
+                page || '',
+                url || '',
+                create_time || '',
                 rating ? rating.value : '',
-                fulltext,
+                fulltext || '',
             ]);
         });
         let worksheet = XLSX.utils.aoa_to_sheet(data);
@@ -1622,23 +1637,26 @@ class Exporter {
 
     async exportStatus(storage) {
         let formatStatus = (status) => {
+            if (!status) return '';
             if (status.deleted || status.hidden) {
-                return status.msg;
+                return status.msg || '已删除或隐藏';
             }
-            let text = `${status.author.name}(@${status.author.uid})`;
+            let authorName = status.author?.name || '未知作者';
+            let authorUid = status.author?.uid || '';
+            let text = `${authorName}(@${authorUid})`;
             if (status.activity) {
                 text += ` ${status.activity}`;
             }
-            text += `: ${status.text}`;
+            text += `: ${status.text || ''}`;
             if (status.card) {
-                text += `[推荐]:《${status.card.title}》(${status.card.url})`;
+                text += `[推荐]:《${status.card.title || ''}》(${status.card.url || ''})`;
             }
             if (status.images && status.images.length > 0) {
                 let images = [];
                 status.images.forEach(image => {
-                    images.push(image.large.url);
+                    if (image?.large?.url) images.push(image.large.url);
                 });
-                text += ` ${images}`;
+                text += ` ${images.join(', ')}`;
             }
             if (status.parent_status) {
                 text += `//${formatStatus(status.parent_status)}...`;
@@ -1654,14 +1672,15 @@ class Exporter {
             .reverse();
         let data = [['创建时间', '链接', '内容', '话题']];
         await collection.each(row => {
+            if (!row || !row.status) return;
             let {
                 sharing_url,
                 create_time,
                 topic,
             } = row.status;
             data.push([
-                create_time,
-                sharing_url,
+                create_time || '',
+                sharing_url || '',
                 formatStatus(row.status),
                 topic ? [topic.title, topic.url].toString() : '',
             ]);
@@ -1782,11 +1801,12 @@ class Exporter {
         let data = [['相册名称', '相册链接', '相册描述', '相册创建时间', '照片描述', '照片链接']];
         let albums = await storage.local.album.toArray();
         for (let {id, album} of albums) {
-            data.push([album.title, album.url, album.description, album.create_time]);
+            if (!album) continue;
+            data.push([album.title || '', album.url || '', album.description || '', album.create_time || '']);
             let photos = storage.local.photo.where({album: id});
             await photos.each(photo => {
-                let {url, description} = photo.photo;
-                data.push([null, null, null, null, description, url]);
+                let {url, description} = photo?.photo || {};
+                data.push([null, null, null, null, description || '', url || '']);
             });
         }
         let worksheet = XLSX.utils.aoa_to_sheet(data);
@@ -1801,13 +1821,13 @@ class Exporter {
             .toArray();
         for (let {id, contact, url} of contacts) {
             data.push([
-                contact.name,
-                url,
+                contact?.name || '未知用户',
+                url || '',
             ]);
             let doumails = storage.local.doumail.where({contact: id});
             await doumails.each(doumail => {
-                let {content, sender, datetime} = doumail;
-                data.push([null, null, sender.name, datetime, content]);
+                let {content, sender, datetime} = doumail || {};
+                data.push([null, null, sender?.name || '', datetime || '', content || '']);
             });
         }
         let worksheet = XLSX.utils.aoa_to_sheet(data);
@@ -1820,17 +1840,20 @@ class Exporter {
             let data = [['豆列名称', '豆列链接', '豆列简介', '豆列创建时间', '豆列更新时间', '内容名称', '内容链接', '来源', '评语']];
             let doulists = await storage.local.doulist.where({type: type}).toArray();
             for (let {id, doulist} of doulists) {
+                if (!doulist) continue;
                 data.push([
-                    doulist.title,
-                    doulist.url,
-                    doulist.desc,
-                    doulist.create_time,
-                    doulist.update_time,
+                    doulist.title || '',
+                    doulist.url || '',
+                    doulist.desc || '',
+                    doulist.create_time || '',
+                    doulist.update_time || '',
                 ]);
                 let items = storage.local.doulistItem.where({doulist: id});
-                await items.each(item => {
-                    let {url, title, source, comment} = item.item;
-                    data.push([null, null, null, null, null, title, url, source, comment]);
+                await items.each(itemRow => {
+                    let item = itemRow?.item;
+                    if (item) {
+                        data.push([null, null, null, null, null, item.title || '', item.url || '', item.source || '', item.comment || '']);
+                    }
                 });
             }
             let worksheet = XLSX.utils.aoa_to_sheet(data);
@@ -1845,10 +1868,10 @@ class Exporter {
             .toArray();
         for (let {id, sender, sendTime, message} of messages) {
             data.push([
-                sender.name,
-                sender.url,
-                sendTime,
-                message
+                sender?.name || '',
+                sender?.url || '',
+                sendTime || '',
+                message || ''
             ]);
         }
         let worksheet = XLSX.utils.aoa_to_sheet(data);
@@ -1957,7 +1980,7 @@ class MigrateModal {
             };
         }
 
-        const service = await Service.getInstance();
+        const service = ServiceProxy.getProxy();
         let job = await service.createJob(null, localUserId, tasks);
         return job;
     }
@@ -1979,8 +2002,8 @@ ExportModal.init();
 MigrateModal.init();
 
 document.querySelector('.button[name="upload"]').addEventListener('click', async () => {
-    let localUserId = parseInt(location.search.substr(1));
-    const service = await Service.getInstance();
+    let localUserId = parseInt(location.search.replace(/^\?/, ''));
+    const service = ServiceProxy.getProxy();
     let job = await service.createJob(localUserId, null, [{name: 'files'}], true);
     if (job) {
         window.open(chrome.runtime.getURL('options.html#service'));

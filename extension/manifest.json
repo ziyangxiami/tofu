@@ -38,12 +38,14 @@
     "host_permissions": [
         "http://*.douban.com/*",
         "https://*.douban.com/*",
-        "https://*.doubanio.com/*"
+        "https://*.doubanio.com/*",
+        "https://api.cloudinary.com/*"
     ],
     "permissions": [
         "storage",
         "cookies",
         "scripting",
+        "alarms",
         "declarativeNetRequest",
         "declarativeNetRequestWithHostAccess"
     ],
