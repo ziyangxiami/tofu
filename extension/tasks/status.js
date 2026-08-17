@@ -42,10 +42,10 @@ export default class Status extends Task {
             .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
-        let count, retried = false;
-        do {
+        while (true) {
+            const requestedMaxId = String(lastStatusId || '');
             let fetch = await this.fetch
-            let response = await fetch(baseURL.replace('{maxId}', lastStatusId), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/statuses'}});
+            let response = await fetch(baseURL.replace('{maxId}', encodeURIComponent(requestedMaxId)), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/statuses'}});
             if (response.status !== 200) {
                 throw new TaskError('豆瓣服务器返回错误');
             }
@@ -53,40 +53,46 @@ export default class Status extends Task {
             if (!json || !json.items) {
                 break;
             }
-            count = json.items.length;
-            let requestedMaxId = lastStatusId;
+            const count = json.items.length;
+            if (count === 0) {
+                break;
+            }
+
+            let nextMaxId = requestedMaxId;
             for (let item of json.items) {
                 let status = item.status;
                 if (!status) continue;
-                if (status.id === requestedMaxId) {
+                const statusId = String(status.id);
+                if (statusId === requestedMaxId) {
                     continue; // 豆瓣接口 max_id 包含边界，需跳过重复的一条以防触发数据库唯一键冲突
                 }
                 item.id = parseInt(status.id);
                 item.created = Date.now();
-                lastStatusId = status.id;
+                nextMaxId = statusId;
                 if (status.text && status.text.length >= 140 && status.text.endsWith('...')) {
-                    item.status = await this.fetchStatusFulltext(lastStatusId);
+                    item.status = await this.fetchStatusFulltext(statusId);
                 }
                 try {
                     await this.storage.status.add(item);
                 } catch (e) {
-                    if (retried) {
-                        if (e.name === 'ConstraintError') {
-                            this.logger.debug(e.message);
-                            this.complete();
-                            return;
-                        }
-                        throw e;
-                    } else {
-                        retried = true;
-                        count = 0;
-                        break;
+                    if (e.name === 'ConstraintError') {
+                        // Timeline pages may overlap by more than their max_id boundary.
+                        // A duplicate item must not terminate the whole backup.
+                        this.logger.debug(e.message);
+                        continue;
                     }
+                    throw e;
                 }
-                await this.storage.table('version').update('status', { lastId: item.id });
                 this.step();
             }
-        } while (count > 0);
+
+            // Avoid requesting the same page forever if Douban ignores or repeats a cursor.
+            if (!nextMaxId || nextMaxId === requestedMaxId) {
+                break;
+            }
+            lastStatusId = nextMaxId;
+            await this.storage.table('version').update('status', { lastId: lastStatusId });
+        }
         this.complete();
     }
 
