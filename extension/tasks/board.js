@@ -17,6 +17,7 @@ export default class Board extends Task {
             let row = await verTable.get('board');
             if (row) {
                 lastMessageId = row.lastId;
+                maxMessageId = parseInt(row.lastId) || 0;
                 await verTable.update('board', {version: version, updated: Date.now()});
             } else {
                 await verTable.add({table: 'board', version: version, updated: Date.now()});

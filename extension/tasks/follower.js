@@ -131,10 +131,11 @@ export default class Follower extends Task {
 
     async run() {
         this.total = (this.targetUser && this.targetUser.followers_count) || 0;
+        await this.storage.table('version').put({table: 'follower', version: this.jobId, updated: Date.now()});
         if (this.total === 0) {
+            this.complete();
             return;
         }
-        await this.storage.table('version').put({table: 'follower', version: this.jobId, updated: Date.now()});
         if (this.total > 5000) {
             this.isOtherUser ?
                 await this.crawlOtherUserByWebpage() :

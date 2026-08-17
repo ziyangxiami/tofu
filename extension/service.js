@@ -1,12 +1,9 @@
 'use strict';
 import Settings from './settings.js';
-import Storage from './storage.js';
 import Job from './services/Job.js';
-import Task from "./services/Task.js";
 import AsyncBlockingQueue from "./services/AsyncBlockingQueue.js";
 import StateChangeEvent from "./services/StateChangeEvent.js";
 import Logger from "./services/Logger.js";
-import {taskFromJSON} from "./services/task_deserialize.js";
 import Annotation from './tasks/annotation.js';
 import Blacklist from './tasks/blacklist.js';
 import Board from './tasks/board.js';
@@ -87,7 +84,7 @@ export default class Service extends EventTarget {
         return {
             _currentJob: this._currentJob ? this._currentJob.toJSON() : null, // 序列化当前任务
             _ports: [], // 运行时 Port 实例不可序列化
-            _jobQueueTasks: this._jobQueue.promises.length > 0 ? this._jobQueue.promises : [], // 保存任务队列内容
+            _jobQueueTasks: this._jobQueue.items.map(job => job.toJSON()),
             _status: this._status,
             lastRequest: this.lastRequest,
             _debug: this._debug,
@@ -107,8 +104,8 @@ export default class Service extends EventTarget {
         // 重新初始化任务队列
         instance._jobQueue = new AsyncBlockingQueue();
         if (json._jobQueueTasks && json._jobQueueTasks.length > 0) {
-            for (let taskJson of json._jobQueueTasks) {
-                instance._jobQueue.enqueue(taskFromJSON(taskJson, service.fetch, service.logger, service.storage));
+            for (let jobJson of json._jobQueueTasks) {
+                instance._jobQueue.enqueue(Job.fromJSON(jobJson, service));
             }
         }
 

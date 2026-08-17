@@ -52,17 +52,17 @@ export default class Photo extends Task {
                 let albumId = parseInt(album.id);
                 let albumPrivacy = album.privacy;
                 if (isNaN(albumId)) continue;
-                let row = await this.storage.album.get(albumId);
-                if (row) {
-                    let lastVersion = row.version;
-                    row.version = version;
-                    if (!this.compareAlbum(album, row.album)) {
-                        !row.history && (row.history = {});
-                        row.history[lastVersion] = row.album;
-                        row.album = album;
+                let albumRow = await this.storage.album.get(albumId);
+                if (albumRow) {
+                    let lastVersion = albumRow.version;
+                    albumRow.version = version;
+                    if (!this.compareAlbum(album, albumRow.album)) {
+                        !albumRow.history && (albumRow.history = {});
+                        albumRow.history[lastVersion] = albumRow.album;
+                        albumRow.album = album;
                     }
                 } else {
-                    row = {
+                    albumRow = {
                         id: albumId,
                         version: version,
                         album: album,
@@ -89,23 +89,23 @@ export default class Photo extends Task {
                         let photoImg = photoAnchor.querySelector('img');
                         let photoSrc = photoImg ? (photoImg.getAttribute('src') || '') : '';
                         let photoDescription = photoAnchor.getAttribute('title') || '';
-                        let row = await this.storage.photo.get(photoId);
-                        if (row) {
-                            let lastVersion = row.version;
-                            row.version = version;
-                            if (row.photo.description != photoDescription ||
-                                row.photo.cover != photoSrc) {
-                                !row.history && (row.history = {});
-                                row.history[lastVersion] = row.photo;
-                                row.photo.description = photoDescription;
-                                if (row.photo.cover != photoSrc) {
+                        let photoRow = await this.storage.photo.get(photoId);
+                        if (photoRow) {
+                            let lastVersion = photoRow.version;
+                            photoRow.version = version;
+                            if (photoRow.photo.description != photoDescription ||
+                                photoRow.photo.cover != photoSrc) {
+                                !photoRow.history && (photoRow.history = {});
+                                photoRow.history[lastVersion] = photoRow.photo;
+                                photoRow.photo.description = photoDescription;
+                                if (photoRow.photo.cover != photoSrc) {
                                     if (albumPrivacy != 'public') {
                                         let rawUrl = await this.fetchPhotoDetail(photoHref);
-                                        row.photo.raw = rawUrl || photoSrc;
+                                        photoRow.photo.raw = rawUrl || photoSrc;
                                     } else {
-                                        row.photo.raw = photoSrc.replace('/m/', '/l/');
+                                        photoRow.photo.raw = photoSrc.replace('/m/', '/l/');
                                     }
-                                    row.photo.cover = photoSrc;
+                                    photoRow.photo.cover = photoSrc;
                                 }
                             }
                         } else {
@@ -116,7 +116,7 @@ export default class Photo extends Task {
                             } else {
                                 rawUrl = photoSrc.replace('/m/', '/l/');
                             }
-                            row = {
+                            photoRow = {
                                 id: photoId,
                                 album: albumId,
                                 version: version,
@@ -128,10 +128,10 @@ export default class Photo extends Task {
                                 }
                             };
                         }
-                        await this.storage.photo.put(row);
+                        await this.storage.photo.put(photoRow);
                     }
                 }
-                await this.storage.album.put(row);
+                await this.storage.album.put(albumRow);
                 this.step();
             }
         }

@@ -14,12 +14,12 @@ const PAGE_SIZE = 100;
 function encodeContext(context) {
     let contextArray = [];
     for (let key in context) {
-        let value = context[key];
+        let value = context[key] == null ? '' : String(context[key]);
         if (value.length > 100) {
             value = value.substring(0, 100);
         }
-        key = key.replaceAll('|', '\|').replaceAll('=', '\=');
-        value = value.replaceAll('|', '\|').replaceAll('=', '\=');
+        key = String(key).replaceAll('|', '\\|').replaceAll('=', '\\=');
+        value = value.replaceAll('|', '\\|').replaceAll('=', '\\=');
         contextArray.push(`${key}=${value}`);
     }
     return contextArray.join('|');
@@ -47,6 +47,7 @@ export default class Files extends Task {
 
     async extractImages() {
         let escapeFolderName = name => {
+            name = name == null ? '未命名' : String(name);
             name = name.replaceAll('?', '？')
                 .replaceAll('&', '＆')
                 .replaceAll('#', '＃')

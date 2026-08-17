@@ -3,31 +3,27 @@
  */
 export default class AsyncBlockingQueue {
     constructor() {
+        this.items = [];
         this.resolves = [];
-        this.promises = [];
-    }
-
-    _add() {
-        this.promises.push(
-            new Promise(resolve => {
-                this.resolves.push(resolve);
-            })
-        );
     }
 
     enqueue(item) {
-        if (!this.resolves.length) this._add();
-        let resolve = this.resolves.shift();
-        resolve(item);
+        if (this.resolves.length) {
+            this.resolves.shift()(item);
+        } else {
+            this.items.push(item);
+        }
     }
 
     dequeue() {
-        if (!this.promises.length) this._add();
-        return this.promises.shift();
+        if (this.items.length) {
+            return Promise.resolve(this.items.shift());
+        }
+        return new Promise(resolve => this.resolves.push(resolve));
     }
 
     isEmpty() {
-        return !this.promises.length;
+        return !this.items.length;
     }
 
     isBlocked() {
@@ -35,10 +31,10 @@ export default class AsyncBlockingQueue {
     }
 
     clear() {
-        this.promises.length = 0;
+        this.items.length = 0;
     }
 
     get length() {
-        return (this.promises.length - this.resolves.length);
+        return this.items.length;
     }
 }

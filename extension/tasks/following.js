@@ -9,14 +9,15 @@ const URL_FOLLOWING_API = 'https://m.douban.com/rexxar/api/v2/user/{uid}/followi
 
 export default class Following extends Task {
     async run() {
-        this.total = this.targetUser.following_count;
+        this.total = (this.targetUser && this.targetUser.following_count) || 0;
+        await this.storage.table('version').put({table: 'following', version: this.jobId, updated: Date.now()});
         if (this.total == 0) {
+            this.complete();
             return;
         }
-        await this.storage.table('version').put({table: 'following', version: this.jobId, updated: Date.now()});
         
         let baseURL = URL_FOLLOWING_API
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
         let pageCount = 1;

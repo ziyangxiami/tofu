@@ -54,7 +54,10 @@ export default class Job extends EventTarget {
     async checkin() {
         const URL_MINE = 'https://m.douban.com/mine/';
 
-        let response = await fetch(URL_MINE);
+        let response = await fetch(URL_MINE, { credentials: 'include' });
+        if (!response.ok) {
+            throw new TaskError('豆瓣服务器返回错误');
+        }
         if (response.redirected) {
             if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) {
                 chrome.tabs.create({ url: response.url });
@@ -186,7 +189,8 @@ export default class Job extends EventTarget {
         const taskQueue = new AsyncBlockingQueue();
 
         let fetch = Service.getFetchURL(this._service);
-        // 将任务添加到队列中
+        let deferredTasks = [];
+        // 图片同步依赖其他备份任务写入的数据，必须在它们全部结束后执行。
         for (let task of this._tasks) {
             task.init(
                 fetch,
@@ -198,7 +202,11 @@ export default class Job extends EventTarget {
                 isOtherUser
             );
 
-            taskQueue.enqueue(task);
+            if (task.constructor.name === 'Files') {
+                deferredTasks.push(task);
+            } else {
+                taskQueue.enqueue(task);
+            }
         }
 
         // 处理任务，确保并发执行数不超过 maxConcurrency
@@ -209,6 +217,18 @@ export default class Job extends EventTarget {
 
         // 等待所有任务完成
         await Promise.all(activePromises);
+
+        for (let task of deferredTasks) {
+            this._currentTask = task;
+            try {
+                await task.run();
+            } catch (e) {
+                console.error(e);
+                logger.error(`Fail to run task [${task.name || task.constructor.name}]: ` + e);
+                if (!this._failedTasks) this._failedTasks = [];
+                this._failedTasks.push({ task: task.name || task.constructor.name, error: e.toString() });
+            }
+        }
 
         try {
             storage.local.close();

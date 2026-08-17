@@ -54,17 +54,17 @@ export default class Doulist extends Task {
                 }
                 for (let doulist of json.doulists) {
                     let doulistId = parseInt(doulist.id);
-                    let row = await this.storage.doulist.get(doulistId);
-                    if (row) {
-                        let lastVersion = row.version;
-                        row.version = version;
-                        if (!this.compareDoulist(doulist, row.doulist)) {
-                            !row.history && (row.history = {});
-                            row.history[lastVersion] = row.doulist;
-                            row.doulist = doulist;
+                    let doulistRow = await this.storage.doulist.get(doulistId);
+                    if (doulistRow) {
+                        let lastVersion = doulistRow.version;
+                        doulistRow.version = version;
+                        if (!this.compareDoulist(doulist, doulistRow.doulist)) {
+                            !doulistRow.history && (doulistRow.history = {});
+                            doulistRow.history[lastVersion] = doulistRow.doulist;
+                            doulistRow.doulist = doulist;
                         }
                     } else {
-                        row = {
+                        doulistRow = {
                             id: doulistId,
                             type: type,
                             version: version,
@@ -135,27 +135,27 @@ export default class Doulist extends Task {
                                 comment: commentBlockquote ? (commentBlockquote.innerText || commentBlockquote.text || '') : null,
                                 extra: extra,
                             };
-                            let row = await this.storage.doulistItem.get(itemId);
-                            if (row) {
-                                let lastVersion = row.version;
-                                row.version = version;
-                                if (!this.compareDoulistItem(itemEntity, row.item)) {
-                                    !row.history && (row.history = {});
-                                    row.history[lastVersion] = row.item;
-                                    row.item = itemEntity;
+                            let itemRow = await this.storage.doulistItem.get(itemId);
+                            if (itemRow) {
+                                let lastVersion = itemRow.version;
+                                itemRow.version = version;
+                                if (!this.compareDoulistItem(itemEntity, itemRow.item)) {
+                                    !itemRow.history && (itemRow.history = {});
+                                    itemRow.history[lastVersion] = itemRow.item;
+                                    itemRow.item = itemEntity;
                                 }
                             } else {
-                                row = {
+                                itemRow = {
                                     id: itemId,
                                     doulist: doulistId,
                                     version: version,
                                     item: itemEntity,
                                 }    
                             }
-                            await this.storage.doulistItem.put(row);
+                            await this.storage.doulistItem.put(itemRow);
                         }
                     }
-                    await this.storage.doulist.put(row);
+                    await this.storage.doulist.put(doulistRow);
                     this.step();
                 }
             }
