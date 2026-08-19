@@ -576,25 +576,21 @@ export default class Service extends EventTarget {
     static getFetchURL(service) {
         let logger = service.logger;
         let lastRequest = 0;
+        let requestChain = Promise.resolve();
 
-        return async (resource, init = {}, continuous = false, retries = 2) => {
-            let promise = service.continue();
-            if (promise === undefined) {
-                console.error("promise is undefined!");
-            }
-            let interval = (service && typeof service.requestInterval === 'number') ? service.requestInterval : 1000;
-            let requestInterval = lastRequest + interval - Date.now();
+        let executeFetch = async (resource, init, continuous, retries) => {
+            await service.continue();
+            let attemptsLeft = retries;
 
-            // 如果请求间隔大于 0，则等待
-            if (!continuous && requestInterval > 0) {
-                promise = promise.then(() => {
-                    return new Promise(resolve => {
-                        setTimeout(resolve, requestInterval);
-                    });
-                });
-            }
+            while (true) {
+                let interval = (service && typeof service.requestInterval === 'number') ? service.requestInterval : 1000;
+                let delay = continuous ? 0 : lastRequest + interval - Date.now();
+                if (delay > 0) {
+                    await Service.waitWithKeepAlive(delay);
+                    // The user may have stopped the service during a long wait.
+                    await service.continue();
+                }
 
-            let fetchResolve = () => {
                 try {
                     let url = Request.prototype.isPrototypeOf(resource) ? resource.url : resource.toString();
                     console.log(`Fetching ${url}... (interval: ${interval}ms)`, resource);
@@ -603,33 +599,59 @@ export default class Service extends EventTarget {
                     let fetchInit = Object.assign({ credentials: 'include' }, init);
 
                     // 直接使用传入的 init 参数，不再修改 Header
-                    return fetch(resource, fetchInit).then(res => {
-                        lastRequest = Date.now();
-                        return res;
-                    }).catch(e => {
-                        if (retries > 0) {
-                            logger.debug(e);
-                            logger.debug(`Attempt to fetch ${retries} times...`);
-                            retries--;
-                            return fetchResolve();
-                        } else {
-                            throw e;
-                        }
-                    });
+                    let response = await fetch(resource, fetchInit);
+                    lastRequest = Date.now();
+                    service.dispatchEvent(new Event("progress"));
+                    return response;
                 } catch (error) {
-                    console.error(error);
-                    logger.error("Fetch error:", error);
-                    return Promise.reject(error);
+                    if (attemptsLeft <= 0) {
+                        console.error(error);
+                        logger.error("Fetch error:", error);
+                        throw error;
+                    }
+                    logger.debug(error);
+                    logger.debug(`Attempt to fetch ${attemptsLeft} times...`);
+                    attemptsLeft--;
                 }
-            };
-            if (promise === undefined) {
-                console.error("then之前，promise is undefined!");
-                promise = Promise.resolve();
             }
-            promise = promise.then(fetchResolve);
-            service.dispatchEvent(new Event("progress"));
-            return promise;
         };
+
+        return (resource, init = {}, continuous = false, retries = 2) => {
+            // All task workers share one chain so the configured interval applies
+            // globally instead of allowing several requests to wake at once.
+            let result = requestChain.then(
+                () => executeFetch(resource, init, continuous, retries),
+                () => executeFetch(resource, init, continuous, retries)
+            );
+            requestChain = result.catch(() => undefined);
+            return result;
+        };
+    }
+
+    static async waitWithKeepAlive(delay) {
+        const deadline = Date.now() + delay;
+        const heartbeatInterval = 20000;
+
+        while (Date.now() < deadline) {
+            let remaining = deadline - Date.now();
+            await new Promise(resolve => setTimeout(resolve, Math.min(remaining, heartbeatInterval)));
+            if (Date.now() < deadline) {
+                await Service.keepAlive();
+            }
+        }
+    }
+
+    static async keepAlive() {
+        if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.getPlatformInfo) {
+            return;
+        }
+        await new Promise(resolve => {
+            try {
+                chrome.runtime.getPlatformInfo(() => resolve());
+            } catch (e) {
+                resolve();
+            }
+        });
     }
 
 }
