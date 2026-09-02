@@ -4,7 +4,7 @@
 
 ### V0.13.0
 
-进行深度重构，修复了大量因升级 Manifest V3 机制变化及豆瓣 API 反爬限制而导致的连环 Bug，终极修复版恢复了插件所有的核心能力：
+进行深度重构，修复了大量因升级 Manifest V3 机制变化及豆瓣 API 反爬限制而导致的问题，恢复了插件的核心能力：
 
 1. **Service Worker 运行异常与连接修复**：
    - 移除了由于 MV3 不支持 `import()` 动态加载和没有 `document` DOM 树而导致的 `import is disallowed on ServiceWorker` 崩溃。

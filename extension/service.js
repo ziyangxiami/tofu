@@ -62,6 +62,7 @@ export default class Service extends EventTarget {
         this._currentJob = null;
         this._ports = new Map();
         this._jobQueue = new AsyncBlockingQueue();
+        this._continuations = [];
         this._status = Service.STATE_STOPPED;
         this.lastRequest = 0;
         this._debug = false;
@@ -93,8 +94,12 @@ export default class Service extends EventTarget {
     }
 
     static fromJSON(json, service) {
-        const instance = new Service();
-        instance._currentJob = json._currentJob ? Job.fromJSON(json._currentJob, service, service.storage) : null; // 反序列化当前任务
+        // Restore into the already registered singleton when one is supplied.
+        // Constructing another Service here registers a second onConnect
+        // listener: UI RPC calls can then enqueue work on that shadow instance
+        // while the singleton startup loop waits forever on an empty queue.
+        const instance = service || new Service();
+        instance._currentJob = json._currentJob ? Job.fromJSON(json._currentJob, instance, instance.storage) : null; // 反序列化当前任务
         instance._ports = new Map(json._ports); // 将数组转换回 Map
         instance._status = json._status;
         instance.lastRequest = json.lastRequest;
@@ -105,7 +110,7 @@ export default class Service extends EventTarget {
         instance._jobQueue = new AsyncBlockingQueue();
         if (json._jobQueueTasks && json._jobQueueTasks.length > 0) {
             for (let jobJson of json._jobQueueTasks) {
-                instance._jobQueue.enqueue(Job.fromJSON(jobJson, service));
+                instance._jobQueue.enqueue(Job.fromJSON(jobJson, instance));
             }
         }
 
@@ -348,9 +353,8 @@ export default class Service extends EventTarget {
         this._status = Service.STATE_START_PENDING;
         this.dispatchEvent(new StateChangeEvent(originalState, this._status));
         this.logger.debug('Starting service...');
-        if (this._continuation) {
-            this._continuation();
-        }
+        const continuations = this._continuations.splice(0);
+        for (let continuation of continuations) continuation();
         await this.saveState();
         return true;
     }
@@ -442,13 +446,13 @@ export default class Service extends EventTarget {
                     this._status = Service.STATE_STOPPED;
                     this.dispatchEvent(new StateChangeEvent(originalState, this._status));
                     this.logger.debug('Service stopped.');
-                    this._continuation = resolve;
+                    this._continuations.push(resolve);
                 };
                 break;
 
             case Service.STATE_STOPPED:
                 executor = resolve => {
-                    this._continuation = resolve;
+                    this._continuations.push(resolve);
                 };
                 break;
 
@@ -502,7 +506,6 @@ export default class Service extends EventTarget {
             }
             await Service._instance.loadSettings()
             Service.startup();
-            await Service._instance.start();
         }
         return Service._instance;
     }
@@ -550,10 +553,21 @@ export default class Service extends EventTarget {
         while (RUN_FOREVER) {
             console.debug("RUN_FOREVER")
             await service.ready();
+            if (!service._currentJob && service._jobQueue.isEmpty()) {
+                // A worker can be reclaimed after start() persisted START_PENDING
+                // but before it received a job. Restoring that snapshot must not
+                // leave the UI stuck on "waiting for task" forever.
+                await service.stop();
+                continue;
+            }
             if (!service._currentJob) {
                 console.log('Waiting for the job...');
                 logger.debug('Waiting for the job...');
                 service._currentJob = await service._jobQueue.dequeue();
+                // Persist the dequeue before running. Otherwise a Service Worker
+                // restart restores the same job both as current and queued, so it
+                // is executed again from the beginning after it completes.
+                await service.saveState();
             }
             try {
                 await service.continue();
@@ -563,6 +577,11 @@ export default class Service extends EventTarget {
                 console.log('Job completed...');
                 logger.debug('Job completed...');
                 service._currentJob = null;
+                if (service._jobQueue.isEmpty()) {
+                    // A drained queue is a completed backup, not an indefinitely
+                    // running service waiting for another copy of the same job.
+                    await service.stop();
+                }
             } catch (e) {
                 console.error(e)
                 logger.error(e);

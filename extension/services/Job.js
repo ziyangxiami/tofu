@@ -170,19 +170,32 @@ export default class Job extends EventTarget {
             await storage.global.account.put(account);
         }
         logger.debug('Create the account');
-        let jobId = await storage.global.job.add({
-            userId: userId,
-            created: Date.now(),
-            progress: {},
-            tasks: JSON.parse(JSON.stringify(this._tasks)),
-        });
-        logger.debug('Create the job');
+        let jobId = this._id;
+        if (jobId === null || jobId === undefined) {
+            jobId = await storage.global.job.add({
+                userId: userId,
+                created: Date.now(),
+                progress: {},
+                tasks: JSON.parse(JSON.stringify(this._tasks)),
+            });
+            logger.debug('Create the job');
+        } else {
+            // A restored in-flight job restarts its idempotent task loops, but it
+            // must keep the original version. Creating a new job here advances
+            // version markers before any rows are written and makes already
+            // persisted partial results appear to have disappeared.
+            logger.debug(`Resume the job [${jobId}]`);
+        }
         storage.global.close();
         logger.debug('Close global database');
+        this._id = jobId;
+        // Store the assigned job/version id before the first task request. If the
+        // worker is reclaimed in this window, the restored job must not allocate
+        // another version and hide rows already written by this run.
+        await this._service.saveState();
 
         await storage.local.open();
         logger.debug('Open local database');
-        this._id = jobId;
 
         // 设置最大并发数
         const maxConcurrency = 3;  // 控制最大并发任务数
