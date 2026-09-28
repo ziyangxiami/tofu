@@ -4,6 +4,7 @@ import Job from './services/Job.js';
 import AsyncBlockingQueue from "./services/AsyncBlockingQueue.js";
 import StateChangeEvent from "./services/StateChangeEvent.js";
 import Logger from "./services/Logger.js";
+import {recordDiagnostic} from './services/diagnostics.js';
 import Annotation from './tasks/annotation.js';
 import Blacklist from './tasks/blacklist.js';
 import Board from './tasks/board.js';
@@ -574,8 +575,14 @@ export default class Service extends EventTarget {
                 console.log('Performing job...');
                 logger.debug('Performing job...');
                 await service._currentJob.run();
-                console.log('Job completed...');
-                logger.debug('Job completed...');
+                const failedCount = service._currentJob._failedTasks?.length || 0;
+                if (failedCount) {
+                    logger.warning(`Job finished with ${failedCount} failed task(s).`);
+                } else if (service._currentJob._emptyTasks?.length) {
+                    logger.warning(`Job finished with ${service._currentJob._emptyTasks.length} empty task(s).`);
+                } else {
+                    logger.debug('Job completed...');
+                }
                 service._currentJob = null;
                 if (service._jobQueue.isEmpty()) {
                     // A drained queue is a completed backup, not an indefinitely
@@ -585,6 +592,9 @@ export default class Service extends EventTarget {
             } catch (e) {
                 console.error(e)
                 logger.error(e);
+                await recordDiagnostic(service._currentJob?._diagnosticRunId, 'job.finished', {
+                    outcome: 'failed', errorType: e?.name || 'Error', errorStack: e?.stack,
+                });
                 await service.stop();
             } finally {
                 await service.saveState();

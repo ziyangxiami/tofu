@@ -4,6 +4,7 @@ import ServiceProxy from './services/ServiceProxy.js';
 import {TASK_FILES_SETTINGS} from './tasks/files.js';
 import Notification from './ui/notification.js';
 import TabPanel from './ui/tab.js';
+import {getDiagnosticReport} from './services/diagnostics.js';
 
 
 class AccountPanel {
@@ -230,6 +231,26 @@ export default class ServicePanel {
         this.$loading = $panel.find('.service-ctrl[name="loading"]');
         this.$logs = $panel.find('.logs');
         this.$job = $panel.find('.job');
+        $panel.find('[name="download-diagnostics"]').click(async event => {
+            const button = event.currentTarget;
+            button.disabled = true;
+            try {
+                const report = await getDiagnosticReport();
+                const blob = new Blob([JSON.stringify(report, null, 2)], {type: 'application/json'});
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `tofu-diagnostics-${new Date().toISOString().slice(0, 10)}.json`;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 60000);
+            } catch (error) {
+                alert('诊断日志下载失败，请刷新页面后重试。');
+            } finally {
+                button.disabled = false;
+            }
+        });
         this.$start.click(async event => {
             console.log("start click")
             await service.start();

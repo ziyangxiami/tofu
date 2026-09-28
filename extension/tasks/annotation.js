@@ -1,6 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
+import {recordDiagnostic} from '../services/diagnostics.js';
 
 
 const PAGE_SIZE = 50;
@@ -71,6 +72,7 @@ export default class Annotation extends Task {
     async crawlWebpage(version) {
         let nextURL = URL_ANNOTATIONS_WEB.replace('{uid}', this.targetUser.id);
         let visited = new Set();
+        let saved = 0;
         this.total = 0;
         this.completion = 0;
 
@@ -117,12 +119,19 @@ export default class Annotation extends Task {
                     };
                     this.total += 1;
                     await this.saveAnnotation(annotation, subject, version);
+                    saved += 1;
                 }
             }
 
             let nextLink = html.querySelector('.paginator .next a');
             let href = nextLink ? (nextLink.getAttribute('href') || '') : '';
             nextURL = href ? new URL(href, nextURL).toString() : null;
+        }
+        await recordDiagnostic(this.diagnosticRunId, 'annotation.fallback', {
+            task: 'Annotation', pages: visited.size, count: saved,
+        });
+        if (saved === 0) {
+            this.logger.warning('移动接口和公开页面均未找到读书笔记，请下载诊断日志反馈。');
         }
     }
 
@@ -136,38 +145,62 @@ export default class Annotation extends Task {
 
         let pageCount = 1;
         let useWebFallback = false;
+        let fallbackReason;
         for (let i = 0; i < pageCount; i ++) {
             let fetch = await this.fetch
             let response = await fetch(baseURL.replace('{start}', i * PAGE_SIZE), {headers: {'X-Override-Referer': 'https://m.douban.com/'}});
             if (response.status !== 200) {
                 useWebFallback = true;
+                fallbackReason = 'http_error';
+                await recordDiagnostic(this.diagnosticRunId, 'annotation.api', {
+                    task: 'Annotation', status: response.status, reason: fallbackReason,
+                    isOther: this.isOtherUser,
+                });
                 break;
             }
             let json = await response.json();
-            this.total = parseInt(json.total) || 0;
-            pageCount = Math.ceil((parseInt(json.total) || 0) / PAGE_SIZE);
-            if (!Array.isArray(json.collections)) {
+            this.total = parseInt(json?.total) || 0;
+            pageCount = Math.ceil(this.total / PAGE_SIZE);
+            const collections = json?.collections;
+            if (i === 0) {
+                await recordDiagnostic(this.diagnosticRunId, 'annotation.api', {
+                    task: 'Annotation', status: response.status, apiTotal: this.total,
+                    apiGroups: Array.isArray(collections) ? collections.length : 0,
+                    isOther: this.isOtherUser,
+                });
+            }
+            if (!Array.isArray(collections)) {
                 useWebFallback = true;
+                fallbackReason = 'invalid_response';
                 break;
             }
-            // The mobile endpoint currently returns zero for some other users
-            // even when their public book page contains annotations.
-            if (i === 0 && this.isOtherUser && this.total === 0) {
+            // The mobile endpoint can return zero for the signed-in account too.
+            if (i === 0 && this.total === 0 && collections.length === 0) {
                 useWebFallback = true;
+                fallbackReason = 'empty_response';
                 break;
             }
-            for (let collection of json.collections) {
+            if (i === 0 && this.total > 0 && collections.length === 0) {
+                useWebFallback = true;
+                fallbackReason = 'invalid_response';
+                break;
+            }
+            for (let collection of collections) {
                 let subject = collection.subject;
-                for (let annotation of collection.annotations) {
+                for (let annotation of collection.annotations || []) {
                     annotation.fulltext = await this.fetchAnnotation(annotation.url);
                     await this.saveAnnotation(annotation, subject, version);
                 }
             }
         }
         if (useWebFallback) {
+            await recordDiagnostic(this.diagnosticRunId, 'annotation.fallback', {
+                task: 'Annotation', reason: fallbackReason,
+            });
             this.logger.warning('移动接口未返回公开读书笔记，改用豆瓣读书公开页面备份。');
             await this.crawlWebpage(version);
         }
+        this.total = Math.max(this.total, this.completion);
         this.complete();
     }
 

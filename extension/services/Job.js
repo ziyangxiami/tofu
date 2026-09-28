@@ -5,6 +5,7 @@ import AsyncBlockingQueue from "./AsyncBlockingQueue.js";
 import Storage from "../storage.js";
 
 import {taskFromJSON} from "./task_deserialize.js";
+import {newDiagnosticRunId, recordDiagnostic} from './diagnostics.js';
 
 /**
  * Class Job
@@ -28,6 +29,7 @@ export default class Job extends EventTarget {
         this._id = null;
         this._session = null;
         this._isOffline = isOffline;
+        this._diagnosticRunId = newDiagnosticRunId();
     }
 
     /**
@@ -126,6 +128,12 @@ export default class Job extends EventTarget {
     async run() {
         let logger = this._service.logger
         this._isRunning = true;
+        this._failedTasks = [];
+        this._emptyTasks = [];
+        await recordDiagnostic(this._diagnosticRunId, 'job.started', {
+            count: this._tasks.length,
+            isOther: !!this._targetUserId || this._isOffline,
+        });
 
         let userId, account, targetUser, isOtherUser = false;
 
@@ -214,6 +222,7 @@ export default class Job extends EventTarget {
                 targetUser,
                 isOtherUser
             );
+            task.diagnosticRunId = this._diagnosticRunId;
 
             if (task.constructor.name === 'Files') {
                 deferredTasks.push(task);
@@ -232,15 +241,7 @@ export default class Job extends EventTarget {
         await Promise.all(activePromises);
 
         for (let task of deferredTasks) {
-            this._currentTask = task;
-            try {
-                await task.run();
-            } catch (e) {
-                console.error(e);
-                logger.error(`Fail to run task [${task.name || task.constructor.name}]: ` + e);
-                if (!this._failedTasks) this._failedTasks = [];
-                this._failedTasks.push({ task: task.name || task.constructor.name, error: e.toString() });
-            }
+            await this.runSingleTask(task, logger);
         }
 
         try {
@@ -249,6 +250,12 @@ export default class Job extends EventTarget {
         logger.debug('Close local database');
         this._currentTask = null;
         this._isRunning = false;
+        await recordDiagnostic(this._diagnosticRunId, 'job.finished', {
+            outcome: this._failedTasks.length ? 'failed' : (this._emptyTasks.length ? 'empty' : 'completed'),
+            failedCount: this._failedTasks.length,
+            emptyCount: this._emptyTasks.length,
+            total: this._tasks.length,
+        });
     }
 
     /**
@@ -257,15 +264,34 @@ export default class Job extends EventTarget {
     async runTaskQueue(queue, logger) {
         while (!queue.isEmpty()) {
             let task = await queue.dequeue();
-            this._currentTask = task;
-            try {
-                await task.run();
-            } catch (e) {
-                console.error(e);
-                logger.error(`Fail to run task [${task.name || task.constructor.name}]: ` + e);
-                if (!this._failedTasks) this._failedTasks = [];
-                this._failedTasks.push({ task: task.name || task.constructor.name, error: e.toString() });
-            }
+            await this.runSingleTask(task, logger);
+        }
+    }
+
+    async runSingleTask(task, logger) {
+        this._currentTask = task;
+        const taskType = task.constructor.name;
+        await recordDiagnostic(this._diagnosticRunId, 'task.started', {task: taskType});
+        try {
+            await task.run();
+            const outcome = taskType === 'Annotation' && task.completion === 0 ? 'empty' : 'completed';
+            if (outcome === 'empty') this._emptyTasks.push(taskType);
+            await recordDiagnostic(this._diagnosticRunId, 'task.finished', {
+                task: taskType,
+                outcome,
+                count: task.completion,
+                total: task.total,
+            });
+        } catch (e) {
+            console.error(e);
+            logger.error(`Fail to run task [${task.name || taskType}]: ` + e);
+            this._failedTasks.push({ task: task.name || taskType, error: e.toString() });
+            await recordDiagnostic(this._diagnosticRunId, 'task.finished', {
+                task: taskType,
+                outcome: 'failed',
+                errorType: e?.name || 'Error',
+                errorStack: e?.stack,
+            });
         }
     }
 
@@ -315,6 +341,7 @@ export default class Job extends EventTarget {
             _session: this._session,
             _isRunning: this._isRunning,
             _currentTask: this._currentTask ? this._currentTask.toJSON() : null,
+            diagnosticRunId: this._diagnosticRunId,
         };
     }
 
@@ -331,6 +358,7 @@ export default class Job extends EventTarget {
         job._id = json._id;
         job._session = json._session;
         job._isRunning = json._isRunning;
+        job._diagnosticRunId = json.diagnosticRunId || job._diagnosticRunId;
         job._currentTask = json._currentTask ? taskFromJSON(json._currentTask, fetch, service.logger, storage) : null;
 
         // 恢复任务

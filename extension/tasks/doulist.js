@@ -1,6 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
+import {recordDiagnostic} from '../services/diagnostics.js';
 
 
 const PAGE_SIZE = 50;
@@ -9,9 +10,14 @@ const URL_DOULIST = 'https://m.douban.com/rexxar/api/v2/user/{uid}/{type}_doulis
 
 export default class Doulist extends Task {
     compareDoulist(l, r) {
+        if (!l || !r) return false;
         if (l.desc != r.desc) return false;
         if (l.title != r.title) return false;
-        if (l.tags.sort().toString() != r.tags.sort().toString()) return false;
+        if (!Array.isArray(l.tags) || !Array.isArray(r.tags)) {
+            this.missingTags = (this.missingTags || 0) + 1;
+        }
+        const tags = value => Array.isArray(value) ? [...value].sort().join(',') : (value == null ? '' : String(value));
+        if (tags(l.tags) != tags(r.tags)) return false;
         return true;
     }
 
@@ -22,6 +28,7 @@ export default class Doulist extends Task {
 
     async run() {
         let version = this.jobId;
+        this.missingTags = 0;
         let ownedCount = this.targetUser.owned_doulist_count || 0;
         let followingCount = this.targetUser.following_doulist_count || 0;
         this.total = ownedCount + followingCount;
@@ -42,11 +49,25 @@ export default class Doulist extends Task {
                 let fetch = await this.fetch
                 let response = await fetch(urlWithType.replace('{start}', i * PAGE_SIZE), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/doulist'}});
                 if (response.status != 200) {
+                    await recordDiagnostic(this.diagnosticRunId, 'doulist.api', {
+                        task: 'Doulist', listType: type, status: response.status,
+                        reason: 'http_error',
+                    });
                     throw new TaskError('豆瓣服务器返回错误');
                 }
                 let json = await response.json();
-                if (!json || json.code || !json.doulists) {
-                    break;
+                if (i === 0) {
+                    await recordDiagnostic(this.diagnosticRunId, 'doulist.api', {
+                        task: 'Doulist', listType: type, status: response.status,
+                        apiTotal: Number.isSafeInteger(json?.total) ? json.total : undefined,
+                        apiGroups: Array.isArray(json?.doulists) ? json.doulists.length : 0,
+                    });
+                }
+                if (!json || json.code || !Array.isArray(json.doulists)) {
+                    await recordDiagnostic(this.diagnosticRunId, 'doulist.api', {
+                        task: 'Doulist', listType: type, reason: 'invalid_response',
+                    });
+                    throw new TaskError('豆列接口响应格式错误');
                 }
                 if (typeof json.total === 'number') {
                     this.total = Math.max(this.total, json.total);
@@ -159,6 +180,11 @@ export default class Doulist extends Task {
                     this.step();
                 }
             }
+        }
+        if (this.missingTags > 0) {
+            await recordDiagnostic(this.diagnosticRunId, 'doulist.missing_tags', {
+                task: 'Doulist', count: this.missingTags,
+            });
         }
         this.complete();
     }
