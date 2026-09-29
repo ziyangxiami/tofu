@@ -9,6 +9,19 @@ const URL_DOULIST = 'https://m.douban.com/rexxar/api/v2/user/{uid}/{type}_doulis
 
 
 export default class Doulist extends Task {
+    numericId(value) {
+        if (!/^\d+$/.test(String(value ?? ''))) return null;
+        const id = Number(value);
+        return Number.isSafeInteger(id) && id > 0 ? id : null;
+    }
+
+    doulistId(doulist) {
+        const urlId = String(doulist?.url || '').match(/\/doulist\/(\d+)(?:[/?#]|$)/)?.[1];
+        return this.numericId(doulist?.id) ??
+            this.numericId(doulist?.doulist_id) ??
+            this.numericId(urlId);
+    }
+
     compareDoulist(l, r) {
         if (!l || !r) return false;
         if (l.desc != r.desc) return false;
@@ -29,6 +42,8 @@ export default class Doulist extends Task {
     async run() {
         let version = this.jobId;
         this.missingTags = 0;
+        let invalidListIds = 0;
+        let invalidItemIds = 0;
         let ownedCount = this.targetUser.owned_doulist_count || 0;
         let followingCount = this.targetUser.following_doulist_count || 0;
         this.total = ownedCount + followingCount;
@@ -74,7 +89,14 @@ export default class Doulist extends Task {
                     pageCount = Math.ceil(json.total / PAGE_SIZE);
                 }
                 for (let doulist of json.doulists) {
-                    let doulistId = parseInt(doulist.id);
+                    let doulistId = this.doulistId(doulist);
+                    if (doulistId === null) {
+                        invalidListIds++;
+                        await recordDiagnostic(this.diagnosticRunId, 'doulist.invalid_id', {
+                            task: 'Doulist', listType: type, count: 1,
+                        });
+                        continue;
+                    }
                     let doulistRow = await this.storage.doulist.get(doulistId);
                     if (doulistRow) {
                         let lastVersion = doulistRow.version;
@@ -108,7 +130,11 @@ export default class Doulist extends Task {
                         for (let item of html.querySelectorAll('.doulist-item')) {
                             let addBtn = item.querySelector('.lnk-doulist-add');
                             if (!addBtn) continue;
-                            let itemId = parseInt(item.id.substr(4));
+                            let itemId = this.numericId(String(item.id || '').match(/(\d+)$/)?.[1]);
+                            if (itemId === null) {
+                                invalidItemIds++;
+                                continue;
+                            }
                             let itemBody = item.querySelector('.bd');
                             let itemTypes = [];
                             for (let itemType of itemBody.classList) {
@@ -185,6 +211,14 @@ export default class Doulist extends Task {
             await recordDiagnostic(this.diagnosticRunId, 'doulist.missing_tags', {
                 task: 'Doulist', count: this.missingTags,
             });
+        }
+        if (invalidItemIds > 0) {
+            await recordDiagnostic(this.diagnosticRunId, 'doulist.invalid_item_id', {
+                task: 'Doulist', count: invalidItemIds,
+            });
+        }
+        if (invalidListIds > 0 || invalidItemIds > 0) {
+            throw new TaskError('部分豆列缺少有效 ID，其他可识别内容已保存');
         }
         this.complete();
     }

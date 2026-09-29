@@ -3,15 +3,16 @@
 const STORAGE_KEY = 'backupDiagnostics';
 const MAX_ENTRIES = 300;
 const EVENTS = new Set([
-    'job.started', 'job.finished', 'task.started', 'task.finished',
-    'annotation.api', 'annotation.fallback', 'doulist.api', 'doulist.missing_tags',
+    'job.started', 'job.finished', 'task.started', 'task.finished', 'task.skipped',
+    'annotation.api', 'annotation.fallback', 'annotation.page',
+    'doulist.api', 'doulist.missing_tags', 'doulist.invalid_id', 'doulist.invalid_item_id',
 ]);
 const OUTCOMES = new Set(['completed', 'empty', 'failed']);
 const REASONS = new Set(['http_error', 'invalid_response', 'empty_response']);
 const LIST_TYPES = new Set(['owned', 'following']);
 const ERROR_TYPES = new Set([
     'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError',
-    'TaskError', 'AbortError', 'NetworkError', 'QuotaExceededError',
+    'TaskError', 'AbortError', 'NetworkError', 'QuotaExceededError', 'DataError',
 ]);
 let pendingWrite = Promise.resolve();
 

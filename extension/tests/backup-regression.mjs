@@ -14,29 +14,54 @@ const chrome = {
     }},
     runtime: {getManifest: () => ({version: 'test'})},
 };
-const context = vm.createContext({chrome, crypto: webcrypto, URL, console});
+const context = vm.createContext({chrome, crypto: webcrypto, URL, EventTarget, console});
 const source = name => readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', name), 'utf8');
 const diagnostics = new vm.SourceTextModule(source('services/diagnostics.js'), {context});
-const task = new vm.SyntheticModule(['default'], function () {
-    this.setExport('default', class Task {
-        step() { this.completion += 1; }
-        complete() { this.completion = this.total; }
-    });
-}, {context});
 const taskError = new vm.SyntheticModule(['default'], function () {
     this.setExport('default', class TaskError extends Error {});
 }, {context});
+const storageModule = new vm.SyntheticModule(['default'], function () {
+    this.setExport('default', class Storage {
+        constructor() {
+            this.global = {
+                open: async () => {}, close: () => {},
+                account: {get: async () => ({userInfo: {id: 1}})},
+            };
+            this.local = {open: async () => {}, close: () => {}};
+        }
+    });
+}, {context});
+const parserModule = new vm.SyntheticModule(['default'], function () {
+    this.setExport('default', () => null);
+}, {context});
+const task = new vm.SourceTextModule(source('services/Task.js'), {context});
+await task.link(specifier => ({'./TaskError.js': taskError, '../storage.js': storageModule,
+    './html_parser.js': parserModule})[specifier]);
+await task.evaluate();
 const imports = {'../services/Task.js': task, '../services/TaskError.js': taskError,
     '../services/diagnostics.js': diagnostics};
+const taskModules = new Map();
 async function loadTask(filename) {
     const module = new vm.SourceTextModule(source(filename), {context});
     await module.link(specifier => imports[specifier]);
     await module.evaluate();
+    taskModules.set(filename, module);
     return module.namespace.default;
 }
 
 const Doulist = await loadTask('tasks/doulist.js');
 const Annotation = await loadTask('tasks/annotation.js');
+const unusedTaskModule = new vm.SyntheticModule(['default'], function () {
+    this.setExport('default', class UnusedTask {});
+}, {context});
+const deserializer = new vm.SourceTextModule(source('services/task_deserialize.js'), {context});
+await deserializer.link(specifier => ({
+    './Task.js': task,
+    '../tasks/annotation.js': taskModules.get('tasks/annotation.js'),
+    '../tasks/doulist.js': taskModules.get('tasks/doulist.js'),
+})[specifier] || unusedTaskModule);
+await deserializer.evaluate();
+const {taskFromJSON} = deserializer.namespace;
 const {recordDiagnostic, getDiagnosticReport} = diagnostics.namespace;
 
 const doulist = new Doulist();
@@ -135,6 +160,134 @@ Object.assign(invalidDoulist, {
 });
 await assert.rejects(() => invalidDoulist.run(), /豆列接口响应格式错误/);
 
+const savedDoulists = [];
+const recoveredDoulist = new Doulist();
+Object.assign(recoveredDoulist, {
+    jobId: 6, diagnosticRunId: 'run-recovered-doulist',
+    targetUser: {id: 1, owned_doulist_count: 0, following_doulist_count: 2},
+    session: doulist.session,
+    storage: {
+        table: () => ({put: async () => {}}),
+        doulist: {
+            get: async id => { assert(Number.isSafeInteger(id)); return null; },
+            put: async row => savedDoulists.push(row),
+        },
+        doulistItem: doulist.storage.doulistItem,
+    },
+    parseHTML: doulist.parseHTML,
+    fetch: async url => {
+        if (url.includes('owned_doulists')) {
+            return {status: 200, json: async () => ({total: 0, doulists: []})};
+        }
+        if (url.includes('following_doulists')) {
+            return {status: 200, json: async () => ({total: 2, doulists: [
+                {title: 'recoverable', desc: '', url: 'https://www.douban.com/doulist/22/'},
+                {title: 'missing ID', desc: '', url: 'https://www.douban.com/other/'},
+            ]})};
+        }
+        return {status: 200, text: async () => '<html></html>'};
+    },
+});
+await assert.rejects(() => recoveredDoulist.run(), /部分豆列缺少有效 ID/);
+assert.deepEqual(savedDoulists.map(row => row.id), [22]);
+
+const annotationRows = new Map();
+const pageLink = id => ({
+    getAttribute: name => name === 'href' ? `https://book.douban.com/annotation/${id}/` : '',
+    textContent: `Note ${id}`,
+});
+const pageHTML = (id, next) => ({
+    querySelectorAll: () => [{
+        querySelector: () => null,
+        querySelectorAll: () => [{querySelector: selector => selector === 'h5>a' ? pageLink(id) : null}],
+    }],
+    querySelector: selector => selector === '.paginator .next a' && next ?
+        {getAttribute: () => '?start=10'} : null,
+});
+const checkpointStorage = {
+    table: () => ({put: async () => {}}),
+    annotation: {
+        get: async id => annotationRows.get(id),
+        put: async row => annotationRows.set(row.id, row),
+    },
+};
+let persistedCheckpoint;
+const interruptedAnnotation = new Annotation();
+Object.assign(interruptedAnnotation, {
+    jobId: 7, diagnosticRunId: 'run-resumed-annotation',
+    targetUser: {id: 1}, session: annotation.session, isOtherUser: false,
+    completion: 0, logger: annotation.logger, storage: checkpointStorage,
+    parseHTML: html => html === 'page1' ? pageHTML(101, true) : pageHTML(202, false),
+    fetchWebAnnotation: async () => ({fulltext: '<p>note</p>'}),
+    saveCheckpoint: async function () { persistedCheckpoint = structuredClone(this.checkpoint); },
+    fetch: async url => {
+        if (url.includes('/rexxar/api/')) {
+            return {status: 200, json: async () => ({total: 0, collections: []})};
+        }
+        if (url.includes('start=10')) throw new Error('simulated worker stop');
+        return {status: 200, text: async () => 'page1'};
+    },
+});
+await assert.rejects(() => interruptedAnnotation.run(), /simulated worker stop/);
+assert.equal(persistedCheckpoint.nextURL, 'https://book.douban.com/people/1/annotation/?start=10');
+assert.equal(persistedCheckpoint.saved, 1);
+
+const resumedRequests = [];
+const serializedAnnotation = JSON.parse(JSON.stringify(interruptedAnnotation.toJSON()));
+assert.equal(serializedAnnotation.checkpoint.saved, 1);
+const resumedAnnotation = taskFromJSON(serializedAnnotation, null, annotation.logger, checkpointStorage);
+resumedAnnotation.init(null, annotation.logger, 7, annotation.session, checkpointStorage, {id: 1}, false);
+assert.equal(resumedAnnotation.checkpoint.saved, 1, 'task initialization must retain its checkpoint');
+Object.assign(resumedAnnotation, {
+    jobId: 7, diagnosticRunId: 'run-resumed-annotation',
+    targetUser: {id: 1}, session: annotation.session, isOtherUser: false,
+    completion: 0,
+    logger: annotation.logger, storage: checkpointStorage,
+    parseHTML: interruptedAnnotation.parseHTML,
+    fetchWebAnnotation: interruptedAnnotation.fetchWebAnnotation,
+    saveCheckpoint: async () => {},
+    fetch: async url => {
+        resumedRequests.push(url);
+        assert(url.includes('start=10'), 'resume must skip the mobile API and completed page');
+        return {status: 200, text: async () => 'page2'};
+    },
+});
+await resumedAnnotation.run();
+assert.equal(resumedRequests.length, 1);
+assert.equal(resumedAnnotation.completion, 2);
+assert.equal(annotationRows.size, 2);
+assert.equal(resumedAnnotation.checkpoint, null);
+
+const serviceModule = new vm.SyntheticModule(['default'], function () {
+    this.setExport('default', class Service {
+        static getFetchURL() { return async () => { throw new Error('completed task ran again'); }; }
+    });
+}, {context});
+const queueModule = new vm.SyntheticModule(['default'], function () {
+    this.setExport('default', class Queue {
+        isEmpty() { return true; }
+        enqueue() { throw new Error('completed task was queued again'); }
+    });
+}, {context});
+const jobModule = new vm.SourceTextModule(source('services/Job.js'), {context});
+await jobModule.link(specifier => ({
+    '../service.js': serviceModule, './Task.js': task, './TaskError.js': taskError,
+    './AsyncBlockingQueue.js': queueModule, '../storage.js': storageModule,
+    './task_deserialize.js': deserializer, './diagnostics.js': diagnostics,
+})[specifier]);
+await jobModule.evaluate();
+const Job = jobModule.namespace.default;
+const service = {logger: {debug: () => {}}, saveState: async () => {}};
+const job = new Job(service, 1, 1, true);
+job._id = 9;
+job.addTask(resumedAnnotation);
+job._completedTaskTypes = ['Annotation'];
+const restoredJob = Job.fromJSON(JSON.parse(JSON.stringify(job.toJSON())), service, checkpointStorage);
+assert.equal(restoredJob.tasks[0].constructor.name, 'Annotation');
+assert.equal(restoredJob._completedTaskTypes[0], 'Annotation');
+await restoredJob.run();
+assert(!restoredJob._failedTasks.length);
+
 await recordDiagnostic('run-annotation', 'task.finished', {
     task: 'Annotation', outcome: 'completed', count: 1,
     cookie: 'secret-cookie', url: 'https://secret.example/?ck=secret-cookie',
@@ -144,12 +297,19 @@ await recordDiagnostic('run-annotation', 'task.finished', {
     task: 'Annotation', outcome: 'failed', errorType: 'TypeError',
     errorStack: 'TypeError: private backup content\n at chrome-extension://secret-id/tasks/doulist.js:14:20?ck=secret-cookie',
 });
+await recordDiagnostic('run-annotation', 'task.finished', {
+    task: 'Doulist', outcome: 'failed', errorType: 'DataError',
+});
 const report = await getDiagnosticReport();
 assert(report.entries.some(entry => entry.event === 'doulist.missing_tags' && entry.count === 1));
 assert(report.entries.some(entry => entry.event === 'doulist.api' && entry.listType === 'owned' && entry.apiGroups === 1));
 assert(report.entries.some(entry => entry.event === 'annotation.fallback' && entry.count === 1));
 assert(report.entries.some(entry => entry.event === 'annotation.fallback' && entry.count === 0));
 assert(report.entries.some(entry => entry.event === 'doulist.api' && entry.reason === 'invalid_response'));
+assert(report.entries.some(entry => entry.event === 'doulist.invalid_id' && entry.listType === 'following'));
+assert(report.entries.some(entry => entry.event === 'annotation.page' && entry.pages === 1));
+assert(report.entries.some(entry => entry.event === 'task.skipped' && entry.task === 'Annotation'));
+assert(report.entries.some(entry => entry.errorType === 'DataError'));
 assert(report.entries.some(entry => entry.errorLocation === 'tasks/doulist.js:14'));
 const exported = JSON.stringify(report);
 assert(!exported.includes('secret-cookie'));

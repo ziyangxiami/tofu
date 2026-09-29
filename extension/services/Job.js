@@ -30,6 +30,8 @@ export default class Job extends EventTarget {
         this._session = null;
         this._isOffline = isOffline;
         this._diagnosticRunId = newDiagnosticRunId();
+        this._completedTaskTypes = [];
+        this._emptyTasks = [];
     }
 
     /**
@@ -129,7 +131,6 @@ export default class Job extends EventTarget {
         let logger = this._service.logger
         this._isRunning = true;
         this._failedTasks = [];
-        this._emptyTasks = [];
         await recordDiagnostic(this._diagnosticRunId, 'job.started', {
             count: this._tasks.length,
             isOther: !!this._targetUserId || this._isOffline,
@@ -213,6 +214,12 @@ export default class Job extends EventTarget {
         let deferredTasks = [];
         // 图片同步依赖其他备份任务写入的数据，必须在它们全部结束后执行。
         for (let task of this._tasks) {
+            if (this._completedTaskTypes.includes(task.constructor.name)) {
+                await recordDiagnostic(this._diagnosticRunId, 'task.skipped', {
+                    task: task.constructor.name,
+                });
+                continue;
+            }
             task.init(
                 fetch,
                 logger,
@@ -223,6 +230,7 @@ export default class Job extends EventTarget {
                 isOtherUser
             );
             task.diagnosticRunId = this._diagnosticRunId;
+            task.saveCheckpoint = () => this._service.saveState();
 
             if (task.constructor.name === 'Files') {
                 deferredTasks.push(task);
@@ -276,6 +284,10 @@ export default class Job extends EventTarget {
             await task.run();
             const outcome = taskType === 'Annotation' && task.completion === 0 ? 'empty' : 'completed';
             if (outcome === 'empty') this._emptyTasks.push(taskType);
+            if (!this._completedTaskTypes.includes(taskType)) {
+                this._completedTaskTypes.push(taskType);
+            }
+            await this._service.saveState();
             await recordDiagnostic(this._diagnosticRunId, 'task.finished', {
                 task: taskType,
                 outcome,
@@ -342,6 +354,8 @@ export default class Job extends EventTarget {
             _isRunning: this._isRunning,
             _currentTask: this._currentTask ? this._currentTask.toJSON() : null,
             diagnosticRunId: this._diagnosticRunId,
+            completedTaskTypes: this._completedTaskTypes,
+            emptyTasks: this._emptyTasks,
         };
     }
 
@@ -359,6 +373,8 @@ export default class Job extends EventTarget {
         job._session = json._session;
         job._isRunning = json._isRunning;
         job._diagnosticRunId = json.diagnosticRunId || job._diagnosticRunId;
+        job._completedTaskTypes = Array.isArray(json.completedTaskTypes) ? json.completedTaskTypes : [];
+        job._emptyTasks = Array.isArray(json.emptyTasks) ? json.emptyTasks : [];
         job._currentTask = json._currentTask ? taskFromJSON(json._currentTask, fetch, service.logger, storage) : null;
 
         // 恢复任务

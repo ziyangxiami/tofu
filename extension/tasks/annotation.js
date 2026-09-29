@@ -70,20 +70,27 @@ export default class Annotation extends Task {
     }
 
     async crawlWebpage(version) {
-        let nextURL = URL_ANNOTATIONS_WEB.replace('{uid}', this.targetUser.id);
-        let visited = new Set();
-        let saved = 0;
-        this.total = 0;
-        this.completion = 0;
+        const checkpoint = this.checkpoint;
+        let nextURL = checkpoint.nextURL;
+        let visited = new Set(checkpoint.visited || []);
+        let saved = checkpoint.saved || 0;
+        let pages = checkpoint.pages || 0;
+        let previousSignature = checkpoint.lastPageSignature || '';
+        this.total = saved;
+        this.completion = saved;
 
-        while (nextURL && !visited.has(nextURL)) {
-            visited.add(nextURL);
+        while (nextURL) {
+            if (visited.has(nextURL)) {
+                throw new TaskError('豆瓣读书笔记分页重复，已保存此前页面');
+            }
             let response = await this.fetch(nextURL);
             if (response.status !== 200) {
                 throw new TaskError('豆瓣读书笔记公开页面返回错误');
             }
             let html = this.parseHTML(await response.text());
-            for (let group of html.querySelectorAll('.annotations-item')) {
+            let pageIds = [];
+            let groups = html.querySelectorAll('.annotations-item');
+            for (let group of groups) {
                 let subjectLink = group.querySelector('.annotations-context>h3>a');
                 let subjectHref = subjectLink ? (subjectLink.getAttribute('href') || '') : '';
                 let subjectMatch = subjectHref.match(/\/annotation\/(\d+)\/?/);
@@ -101,6 +108,7 @@ export default class Annotation extends Task {
                     let url = link ? (link.getAttribute('href') || '') : '';
                     let idMatch = url.match(/\/annotation\/(\d+)\/?/);
                     if (!idMatch) continue;
+                    pageIds.push(idMatch[1]);
                     let abstractNode = item.querySelector('.abstract');
                     let abstract = abstractNode ? (abstractNode.textContent || abstractNode.text || '').trim() : '';
                     let commentsLink = item.querySelector('a[href*="#comments"]');
@@ -125,10 +133,31 @@ export default class Annotation extends Task {
 
             let nextLink = html.querySelector('.paginator .next a');
             let href = nextLink ? (nextLink.getAttribute('href') || '') : '';
-            nextURL = href ? new URL(href, nextURL).toString() : null;
+            let followingURL = href ? new URL(href, nextURL).toString() : null;
+            let signature = `${pageIds.length}:${pageIds[0] || ''}:${pageIds.at(-1) || ''}`;
+            if (followingURL && signature === previousSignature) {
+                throw new TaskError('豆瓣读书笔记分页内容重复，已保存此前页面');
+            }
+            visited.add(nextURL);
+            pages++;
+            this.checkpoint = {
+                kind: 'annotation-web', nextURL: followingURL,
+                visited: [...visited], saved, pages,
+                lastPageSignature: signature,
+            };
+            await this.saveCheckpoint?.();
+            if (pages === 1 || pages % 5 === 0 || !followingURL) {
+                await recordDiagnostic(this.diagnosticRunId, 'annotation.page', {
+                    task: 'Annotation', pages, count: saved, apiGroups: groups.length,
+                });
+            }
+            previousSignature = signature;
+            nextURL = followingURL;
         }
+        this.checkpoint = null;
+        await this.saveCheckpoint?.();
         await recordDiagnostic(this.diagnosticRunId, 'annotation.fallback', {
-            task: 'Annotation', pages: visited.size, count: saved,
+            task: 'Annotation', pages, count: saved,
         });
         if (saved === 0) {
             this.logger.warning('移动接口和公开页面均未找到读书笔记，请下载诊断日志反馈。');
@@ -138,6 +167,13 @@ export default class Annotation extends Task {
     async run() {
         let version = this.jobId;
         await this.storage.table('version').put({table: 'annotation', version: version, updated: Date.now()});
+
+        if (this.checkpoint?.kind === 'annotation-web') {
+            await this.crawlWebpage(version);
+            this.total = Math.max(this.total, this.completion);
+            this.complete();
+            return;
+        }
 
         let baseURL = URL_ANNOTATIONS
             .replace('{ck}', this.session?.cookies?.ck || '')
@@ -198,6 +234,12 @@ export default class Annotation extends Task {
                 task: 'Annotation', reason: fallbackReason,
             });
             this.logger.warning('移动接口未返回公开读书笔记，改用豆瓣读书公开页面备份。');
+            this.checkpoint = {
+                kind: 'annotation-web',
+                nextURL: URL_ANNOTATIONS_WEB.replace('{uid}', this.targetUser.id),
+                visited: [], saved: 0, pages: 0, lastPageSignature: '',
+            };
+            await this.saveCheckpoint?.();
             await this.crawlWebpage(version);
         }
         this.total = Math.max(this.total, this.completion);

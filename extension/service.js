@@ -512,8 +512,13 @@ export default class Service extends EventTarget {
     }
 
     async saveState() {
-        const state = this.toJSON(); // 调用 toJSON 方法序列化
-        await chrome.storage.session.set({ serviceState: state });
+        // Concurrent task workers can finish at the same time. Serialize writes
+        // and capture the latest state when each write actually runs, so an older
+        // snapshot cannot overwrite a newer task checkpoint.
+        this._stateSaveChain = (this._stateSaveChain || Promise.resolve())
+            .catch(() => undefined)
+            .then(() => chrome.storage.session.set({serviceState: this.toJSON()}));
+        await this._stateSaveChain;
         console.log('Service 状态已保存');
     }
 

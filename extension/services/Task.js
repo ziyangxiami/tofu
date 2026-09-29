@@ -104,6 +104,7 @@ export default class Task {
             isOtherUser: this.isOtherUser,
             total: this.total,
             completion: this.completion,
+            checkpoint: this.checkpoint || null,
             // 忽略不可序列化的成员变量：fetch、logger、parseHTML、storage
         };
     }

@@ -57,6 +57,7 @@ export function taskFromJSON(json, fetch, logger, storage) {
     task.isOtherUser = json.isOtherUser;
     task.total = json.total;
     task.completion = json.completion;
+    task.checkpoint = json.checkpoint || null;
 
     // 重新初始化不可序列化的成员变量
     task.fetch = fetch;
