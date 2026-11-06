@@ -13,9 +13,7 @@ export default class TabPanel extends EventTarget {
             }
         }, false);
 
-        if (location.hash) {
-            this.toggle(location.hash.substr(1));
-        } else {
+        if (!location.hash || !this.toggle(location.hash.substr(1))) {
             for (let i = 0; i < $tabs.length; i ++) {
                 let tab = $tabs[i];
                 if (tab.classList.contains('is-active')) {
@@ -32,8 +30,9 @@ export default class TabPanel extends EventTarget {
 
     toggle(tabName, tab) {
         if (!tab) {
-            tab = this.$tabs.find('[href="#' + tabName + '"]').parent('li')[0];
+            tab = Array.from(this.$tabs).find(item => item.dataset.tab === tabName);
         }
+        if (!tab || !Array.from(this.$contents).some(item => item.getAttribute('name') === tabName)) return false;
         this.$tabs.removeClass('is-active');
         this.$contents.addClass('is-hidden');
         tab.classList.add('is-active');
@@ -44,6 +43,7 @@ export default class TabPanel extends EventTarget {
             }
         });
         this.dispatchEvent(new Event('toggle'));
+        return true;
     }
 
     static render() {

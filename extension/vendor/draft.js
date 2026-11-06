@@ -32,17 +32,18 @@ const BLOCK_TAGS = {
         {class: 'image-container', type: 'atomic', handle(node) {
             this.block.write(' ');
             let imageNode = node.querySelector('.image-wrapper>img');
-            let imageIdMatch = imageNode.src.match(/.*\D(\d+)\..+$/);
+            if (!imageNode) throw new Error('图片内容缺失');
+            let imageIdMatch = (imageNode.getAttribute('src') || '').match(/.*\D(\d+)\..+$/);
             let imageId = imageIdMatch ? imageIdMatch[1]: '';
             let imageCaption = node.querySelector('.image-caption');
-            let imageSrc = imageNode.src;
+            let imageSrc = imageNode.getAttribute('src') || '';
             let entityId = this.addEntity('IMAGE', false, {
                 src: imageSrc,
                 url: imageSrc,
                 thumb: imageSrc,
                 file_name: '',
-                caption: imageCaption ? imageCaption.innerText : '',
-                is_animated: (imageNode.dataset.renderType == 'gif') ? true : false,
+                caption: imageCaption ? (imageCaption.innerText || imageCaption.textContent || '') : '',
+                is_animated: (imageNode.getAttribute('data-render-type') == 'gif') ? true : false,
                 id: imageId,
                 seq: imageId,
             });
@@ -73,13 +74,13 @@ const TEXT_TAGS = {
 
 const ENTITY_TAGS = {
     a(node) {
-        return this.addEntity('LINK', true, {url: node.href});
+        return this.addEntity('LINK', true, {url: node.getAttribute('href') || ''});
     },
 
     img(node) {
         return this.addEntity('IMAGE', false, {
-            src: node.src,
-            caption: node.alt || node.title || '',
+            src: node.getAttribute('src') || '',
+            caption: node.getAttribute('alt') || node.getAttribute('title') || '',
         });
     },
 
@@ -199,10 +200,10 @@ export default class Draft {
             if (rule.class && !node.classList.contains(rule.class)) {
                 continue;
             }
-            if (rule.style && node.attributes.style.value != rule.style) {
+            if (rule.style && (node.getAttribute('style') || '') != rule.style) {
                 continue;
             }
-            if (rule.parent && node.parentNode.tagName.toLowerCase() != rule.parent) {
+            if (rule.parent && (node.parentNode?.tagName || '').toLowerCase() != rule.parent) {
                 continue;
             }
             return [rule.type, rule.handle];
@@ -214,9 +215,10 @@ export default class Draft {
         for (let node of parentNode.childNodes) {
             let ignoreRecursive = false;
             switch (node.nodeType) {
-                case node.ELEMENT_NODE:
+                case 1:
                     // Element
                     let nodeTagName = node.tagName.toLowerCase();
+                    if (['script', 'style', 'noscript'].includes(nodeTagName)) break;
                     if (nodeTagName in BLOCK_TAGS) {
                         // Block element
                         let defination = BLOCK_TAGS[nodeTagName];
@@ -247,6 +249,7 @@ export default class Draft {
                         let handler = ENTITY_TAGS[nodeTagName];
                         let entityId = handler.call(this, node);
                         let range = this.block.addEntityRange(entityId);
+                        if (nodeTagName === 'img' || nodeTagName === 'hr') this.block.write(' ');
                         this.travelChildren(node, depth + 1);
                         range.length = this.block.length - range.offset;
                         ignoreRecursive = true;
@@ -259,7 +262,7 @@ export default class Draft {
                         this.travelChildren(node, depth + 1);
                     }
                     break;
-                case node.TEXT_NODE:
+                case 3:
                     // Text
                     this.block.write(node.textContent);
                     break;
@@ -268,7 +271,9 @@ export default class Draft {
     }
 
     feed(html) {
+        if (!html || !html.childNodes) throw new Error('正文内容无效');
         this.travelChildren(html);
+        if (this._block) this._block.end();
         return this;
     }
 

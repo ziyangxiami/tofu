@@ -1,245 +1,184 @@
-#include <tchar.h>
 #include <windows.h>
+#include <shellapi.h>
+#include <wchar.h>
+#include <stddef.h>
+#include <string.h>
 
+#define PATH_CAPACITY 32768
+#define COMMAND_CAPACITY 32767
+#define EXTENSION_ID_CAPACITY 34
+#define EXTENSION_DEFAULT_ID L"ghppfgfeoafdcaebjoglabppkfmbcjdd"
+#define EXTENSION_SOURCE L"https://update.doufen.org/*"
 
-#define USER_DATA_DIR "userdata"
-#define CHROME_PATH "chrome\\chrome.exe"
-#define CHROME_CLI ".\\"CHROME_PATH" --user-data-dir="USER_DATA_DIR
-#define EXTENSION_DEFAULT_ID "ghppfgfeoafdcaebjoglabppkfmbcjdd"
-#define EXTENSION_URL "%s;https://update.doufen.org/"
-#define EXTENSION_SOURCE "https://update.doufen.org/*"
-#define EXTENSION_PATH USER_DATA_DIR"\\Default\\Extensions\\%s"
-#define CONFIGURE_FILENAME "config.ini"
-#define SIZE_MSG 1024
-#define SIZE_EXTENSION_ID 34
+static WCHAR g_executable[PATH_CAPACITY];
+static WCHAR g_directory[PATH_CAPACITY];
+static WCHAR g_chromePath[PATH_CAPACITY];
+static WCHAR g_userDataPath[PATH_CAPACITY];
+static WCHAR g_configPath[PATH_CAPACITY];
+static WCHAR g_extensionId[EXTENSION_ID_CAPACITY];
 
-/*
-URL Paramters:
-os=win&
-arch=x64&
-os_arch=x86_64&
-nacl_arch=x86-64&
-prod=chromiumcrx&
-prodchannel=&
-prodversion=[chrome version]&
-lang=zh-CN&
-acceptformat=crx2,crx3&
-x=id%3D[extension id]%26v%3D[version]%26installsource%3Dnotfromwebstore%26installedby%3Dpolicy%26uc
-
-x:
-id=[extension id]&
-v=[version]&
-installsource=notfromwebstore&
-installedby=policy&
-uc
- */
-
-
-BOOL WriteRegistryPolicies();
-BOOL StartupChromium();
-DWORD GetLastErrorMessage(LPSTR, DWORD);
-BOOL IsFirstRun();
-BOOL AllowAccessRegistrySoftwarePolicies();
-BOOL RunAsAdministrator();
-BOOL LoadSettings(LPCSTR);
-
-TCHAR g_szExtensionID[SIZE_EXTENSION_ID];
-
-
-int WINAPI WinMain(HINSTANCE hThisInstance,
-                   HINSTANCE hPrevInstance,
-                   LPSTR lpszArgument,
-                   int nCmdShow)
+static BOOL AppendWide(WCHAR *destination, size_t capacity, const WCHAR *source)
 {
-    HWND hWindow = GetForegroundWindow();
-    TCHAR szError[SIZE_MSG],
-          szMessage[SIZE_MSG + 100];
+    size_t used = wcslen(destination), added = wcslen(source);
+    if (used >= capacity || added >= capacity - used) {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    memcpy(destination + used, source, (added + 1) * sizeof(WCHAR));
+    return TRUE;
+}
 
-    LoadSettings(TEXT(CONFIGURE_FILENAME));
-    BOOL isFirstRun = IsFirstRun();
+static BOOL PathBesideLauncher(WCHAR *destination, const WCHAR *relativePath)
+{
+    destination[0] = L'\0';
+    return AppendWide(destination, PATH_CAPACITY, g_directory) &&
+           AppendWide(destination, PATH_CAPACITY, relativePath);
+}
 
-    if (isFirstRun) {
-        if (!AllowAccessRegistrySoftwarePolicies()) {
-            if (IDYES == MessageBox(hWindow,
-                                    TEXT("√ª”––¥»Î◊¢≤·±Ì»Ìº˛≤ﬂ¬‘µƒ»®œﬁ°£ «∑Ò≥¢ ‘“‘π‹¿Ì‘±…Ì∑›‘À––£ø"),
-                                    TEXT("»∑»œ"),
-                                    MB_YESNO | MB_ICONQUESTION) &&
-                !RunAsAdministrator())
-            {
-                GetLastErrorMessage(szError, SIZE_MSG);
-                wsprintf(szMessage, TEXT("“‘π‹¿Ì‘±…Ì∑›‘À––≥Ã–Ú ß∞‹£∫%s"), szError);
-                MessageBox(hWindow, szMessage, TEXT("¥ÌŒÛ"), MB_OK | MB_ICONERROR);
-            }
-            return 0;
-        }
+static BOOL InitializePaths(void)
+{
+    DWORD length = GetModuleFileNameW(NULL, g_executable, PATH_CAPACITY);
+    if (length == 0) return FALSE;
+    if (length >= PATH_CAPACITY) {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    memcpy(g_directory, g_executable, (length + 1) * sizeof(WCHAR));
+    WCHAR *lastSlash = wcsrchr(g_directory, L'\\');
+    if (!lastSlash) {
+        SetLastError(ERROR_BAD_PATHNAME);
+        return FALSE;
+    }
+    lastSlash[1] = L'\0';
+    return PathBesideLauncher(g_chromePath, L"chrome\\chrome.exe") &&
+           PathBesideLauncher(g_userDataPath, L"userdata") &&
+           PathBesideLauncher(g_configPath, L"config.ini");
+}
 
-        if (!WriteRegistryPolicies()) {
-            GetLastErrorMessage(szError, SIZE_MSG);
-            wsprintf(szMessage, TEXT("–¥»Î◊¢≤·±Ì ß∞‹£∫%s"), szError);
-            MessageBox(hWindow, szMessage, TEXT("¥ÌŒÛ"), MB_OK | MB_ICONERROR);
-            return 0;
+static BOOL LoadSettings(void)
+{
+    DWORD length = GetPrivateProfileStringW(L"extension", L"id", EXTENSION_DEFAULT_ID,
+        g_extensionId, EXTENSION_ID_CAPACITY, g_configPath);
+    if (length != 32) {
+        SetLastError(ERROR_INVALID_DATA);
+        return FALSE;
+    }
+    for (DWORD index = 0; index < length; ++index) {
+        if (g_extensionId[index] < L'a' || g_extensionId[index] > L'p') {
+            SetLastError(ERROR_INVALID_DATA);
+            return FALSE;
         }
     }
+    return TRUE;
+}
 
-    if (!StartupChromium())
-    {
-        GetLastErrorMessage(szError, SIZE_MSG);
-        wsprintf(szMessage, TEXT("‘À––°∞%s°± ß∞‹£∫%s"), TEXT(CHROME_PATH), szError);
-        MessageBox(hWindow, szMessage, TEXT("¥ÌŒÛ"), MB_OK | MB_ICONERROR);
-        return 0;
+static BOOL IsFirstRun(void)
+{
+    WCHAR extensionPath[PATH_CAPACITY];
+    if (!PathBesideLauncher(extensionPath, L"userdata\\Default\\Extensions\\") ||
+        !AppendWide(extensionPath, PATH_CAPACITY, g_extensionId)) return TRUE;
+    DWORD attributes = GetFileAttributesW(extensionPath);
+    return attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static BOOL WriteRegistryPolicies(void)
+{
+    HKEY chromium = NULL, forceList = NULL, sources = NULL;
+    WCHAR extensionUrl[128] = L"";
+    DWORD enabled = 1;
+    LSTATUS result;
+    if (!AppendWide(extensionUrl, 128, g_extensionId) ||
+        !AppendWide(extensionUrl, 128, L";https://update.doufen.org/")) return FALSE;
+
+    result = RegCreateKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\Policies\\Chromium", 0,
+        NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, NULL, &chromium, NULL);
+    if (result != ERROR_SUCCESS) goto cleanup;
+    result = RegCreateKeyExW(HKEY_CURRENT_USER,
+        L"SOFTWARE\\Policies\\Chromium\\ExtensionInstallForcelist", 0,
+        NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, NULL, &forceList, NULL);
+    if (result != ERROR_SUCCESS) goto cleanup;
+    result = RegCreateKeyExW(HKEY_CURRENT_USER,
+        L"SOFTWARE\\Policies\\Chromium\\ExtensionInstallSources", 0,
+        NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, NULL, &sources, NULL);
+    if (result != ERROR_SUCCESS) goto cleanup;
+    result = RegSetValueExW(chromium, L"ExtensionAllowInsecureUpdates", 0,
+        REG_DWORD, (const BYTE *)&enabled, sizeof(enabled));
+    if (result != ERROR_SUCCESS) goto cleanup;
+    result = RegSetValueExW(forceList, L"1", 0, REG_SZ, (const BYTE *)extensionUrl,
+        (DWORD)((wcslen(extensionUrl) + 1) * sizeof(WCHAR)));
+    if (result != ERROR_SUCCESS) goto cleanup;
+    result = RegSetValueExW(sources, L"1", 0, REG_SZ, (const BYTE *)EXTENSION_SOURCE,
+        (DWORD)sizeof(EXTENSION_SOURCE));
+cleanup:
+    if (sources) RegCloseKey(sources);
+    if (forceList) RegCloseKey(forceList);
+    if (chromium) RegCloseKey(chromium);
+    if (result != ERROR_SUCCESS) SetLastError((DWORD)result);
+    return result == ERROR_SUCCESS;
+}
+
+static BOOL StartupChromium(void)
+{
+    STARTUPINFOW startup = {0};
+    PROCESS_INFORMATION process = {0};
+    WCHAR commandLine[COMMAND_CAPACITY] = L"\"";
+    startup.cb = sizeof(startup);
+    if (!AppendWide(commandLine, COMMAND_CAPACITY, g_chromePath) ||
+        !AppendWide(commandLine, COMMAND_CAPACITY, L"\" --user-data-dir=\"") ||
+        !AppendWide(commandLine, COMMAND_CAPACITY, g_userDataPath) ||
+        !AppendWide(commandLine, COMMAND_CAPACITY, L"\"")) return FALSE;
+
+    SetEnvironmentVariableW(L"GOOGLE_API_KEY", L"no");
+    SetEnvironmentVariableW(L"GOOGLE_DEFAULT_CLIENT_ID", L"no");
+    SetEnvironmentVariableW(L"GOOGLE_DEFAULT_CLIENT_SECRET", L"no");
+    // CreateProcessW can modify commandLine. Both paths are absolute and quoted,
+    // so launching through a shortcut with another working directory is safe.
+    if (!CreateProcessW(g_chromePath, commandLine, NULL, NULL, FALSE, 0, NULL,
+                       g_directory, &startup, &process)) return FALSE;
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return TRUE;
+}
+
+static BOOL RunAsAdministrator(void)
+{
+    SHELLEXECUTEINFOW info = {0};
+    info.cbSize = sizeof(info);
+    info.lpVerb = L"runas";
+    info.lpFile = g_executable;
+    info.lpDirectory = g_directory;
+    info.nShow = SW_SHOWNORMAL;
+    return ShellExecuteExW(&info);
+}
+
+static void ShowError(HWND window, const WCHAR *operation)
+{
+    DWORD error = GetLastError();
+    WCHAR detail[1024] = L"", message[1400] = L"";
+    FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL, error, 0, detail, 1024, NULL);
+    swprintf(message, 1400, L"%lsÂ§±Ë¥•ÔºàÈîôËØØ %luÔºâ„ÄÇ\n%ls", operation, (unsigned long)error, detail);
+    MessageBoxW(window, message, L"Ë±Ü‰º¥ÂêØÂä®Âô®", MB_OK | MB_ICONERROR);
+}
+
+int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR arguments, int show)
+{
+    (void)instance; (void)previous; (void)arguments; (void)show;
+    HWND window = GetForegroundWindow();
+    if (!InitializePaths()) { ShowError(window, L"ËØªÂèñÂêØÂä®Âô®Ë∑ØÂæÑ"); return 1; }
+    if (!LoadSettings()) { ShowError(window, L"ËØªÂèñ config.ini ÁöÑ [extension] idÔºàÂ∫î‰∏∫ 32 ‰Ωç a-p Â≠óÊØçÔºâ"); return 1; }
+    if (IsFirstRun() && !WriteRegistryPolicies()) {
+        DWORD error = GetLastError();
+        if (error == ERROR_ACCESS_DENIED && MessageBoxW(window,
+            L"Ê≤°ÊúâÂÜôÂÖ• Chromium Á≠ñÁï•ÁöÑÊùÉÈôê„ÄÇÊòØÂê¶‰ª•ÁÆ°ÁêÜÂëòË∫´‰ªΩÈáçÊñ∞ËøêË°åÔºü",
+            L"Ë±Ü‰º¥ÂêØÂä®Âô®", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            if (!RunAsAdministrator()) { ShowError(window, L"‰ª•ÁÆ°ÁêÜÂëòË∫´‰ªΩÂêØÂä®"); return 1; }
+            return 0;
+        }
+        SetLastError(error);
+        ShowError(window, L"ÂÜôÂÖ• Chromium Á≠ñÁï•");
+        return 1;
     }
-
+    if (!StartupChromium()) { ShowError(window, L"ÂêØÂä® chrome\\chrome.exe"); return 1; }
     return 0;
-}
-
-
-DWORD GetLastErrorMessage(LPSTR lpszMessage, DWORD nSize)
-{
-    return FormatMessage(
-        FORMAT_MESSAGE_FROM_SYSTEM,
-        NULL,
-        GetLastError(),
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        lpszMessage,
-        nSize,
-        NULL
-    );
-}
-
-
-BOOL WriteRegistryPolicies()
-{
-    HKEY hKeyChromium,
-         hKeyExtensionInstallForcelist,
-         hKeyExtensionInstallSources;
-    DWORD dwOne = 1;
-    TCHAR szExtensionUrl[SIZE_EXTENSION_ID + sizeof(EXTENSION_URL)];
-    wsprintf(szExtensionUrl, TEXT(EXTENSION_URL), g_szExtensionID);
-
-    if (ERROR_SUCCESS != RegCreateKeyEx(HKEY_CURRENT_USER,
-                                        TEXT("SOFTWARE\\Policies\\Chromium"),
-                                        0,
-                                        NULL,
-                                        REG_OPTION_NON_VOLATILE,
-                                        KEY_ALL_ACCESS,
-                                        NULL,
-                                        &hKeyChromium,
-                                        NULL) ||
-        ERROR_SUCCESS != RegCreateKeyEx(HKEY_CURRENT_USER,
-                                        TEXT("SOFTWARE\\Policies\\Chromium\\ExtensionInstallForcelist"),
-                                        0,
-                                        NULL,
-                                        REG_OPTION_NON_VOLATILE,
-                                        KEY_ALL_ACCESS,
-                                        NULL,
-                                        &hKeyExtensionInstallForcelist,
-                                        NULL) ||
-        ERROR_SUCCESS != RegCreateKeyEx(HKEY_CURRENT_USER,
-                                        TEXT("SOFTWARE\\Policies\\Chromium\\ExtensionInstallSources"),
-                                        0,
-                                        NULL,
-                                        REG_OPTION_NON_VOLATILE,
-                                        KEY_ALL_ACCESS,
-                                        NULL,
-                                        &hKeyExtensionInstallSources,
-                                        NULL) ||
-        ERROR_SUCCESS != RegSetValueEx(hKeyChromium,
-                                       TEXT("ExtensionAllowInsecureUpdates"),
-                                       0,
-                                       REG_DWORD,
-                                       (LPBYTE)&dwOne,
-                                       sizeof(DWORD)) ||
-        ERROR_SUCCESS != RegSetValueEx(hKeyExtensionInstallForcelist,
-                                       TEXT("1"),
-                                       0,
-                                       REG_SZ,
-                                       (LPBYTE)szExtensionUrl,
-                                       sizeof(szExtensionUrl)) ||
-        ERROR_SUCCESS != RegSetValueEx(hKeyExtensionInstallSources,
-                                       TEXT("1"),
-                                       0,
-                                       REG_SZ,
-                                       (LPBYTE)TEXT(EXTENSION_SOURCE),
-                                       sizeof(TEXT(EXTENSION_SOURCE))))
-    {
-        return FALSE;
-    }
-    RegCloseKey(hKeyChromium);
-    RegCloseKey(hKeyExtensionInstallForcelist);
-    RegCloseKey(hKeyExtensionInstallSources);
-    return TRUE;
-}
-
-
-BOOL StartupChromium()
-{
-    STARTUPINFO si;
-    PROCESS_INFORMATION pi;
-
-    ZeroMemory( &si, sizeof(si) );
-    si.cb = sizeof(si);
-    ZeroMemory( &pi, sizeof(pi) );
-
-    SetEnvironmentVariable(TEXT("GOOGLE_API_KEY"), TEXT("no"));
-    SetEnvironmentVariable(TEXT("GOOGLE_DEFAULT_CLIENT_ID"), TEXT("no"));
-    SetEnvironmentVariable(TEXT("GOOGLE_DEFAULT_CLIENT_SECRET"), TEXT("no"));
-
-    return CreateProcess(NULL, TEXT(CHROME_CLI), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
-}
-
-
-BOOL IsFirstRun()
-{
-    TCHAR szExtensionPath[sizeof(EXTENSION_PATH) + SIZE_EXTENSION_ID];
-    wsprintf(szExtensionPath, EXTENSION_PATH, g_szExtensionID);
-
-    DWORD dwFileAttributes = GetFileAttributes(szExtensionPath);
-    if (INVALID_FILE_ATTRIBUTES == dwFileAttributes ||
-        !(FILE_ATTRIBUTE_DIRECTORY & dwFileAttributes)) {
-        return TRUE;
-    }
-    return FALSE;
-}
-
-
-BOOL AllowAccessRegistrySoftwarePolicies()
-{
-    HKEY hKeySoftwarePolicies;
-    if (ERROR_SUCCESS != RegOpenKeyEx(HKEY_CURRENT_USER,
-                                      TEXT("SOFTWARE\\Policies"),
-                                      0,
-                                      KEY_ALL_ACCESS,
-                                      &hKeySoftwarePolicies))
-    {
-        return FALSE;
-    }
-    RegCloseKey(hKeySoftwarePolicies);
-    return TRUE;
-}
-
-
-BOOL RunAsAdministrator()
-{
-    TCHAR lpszFilename[MAX_PATH];
-    GetModuleFileName(NULL, lpszFilename, MAX_PATH);
-
-    SHELLEXECUTEINFO sei = { sizeof(SHELLEXECUTEINFO) };
-    sei.lpVerb = TEXT("runas");
-    sei.lpFile = lpszFilename;
-    sei.nShow = SW_SHOWNORMAL;
-
-    return ShellExecuteEx(&sei);
-}
-
-
-BOOL LoadSettings(LPCSTR lpszIniFile)
-{
-    return (BOOL)GetPrivateProfileString(
-        NULL,
-        TEXT("id"),
-        TEXT(EXTENSION_DEFAULT_ID),
-        g_szExtensionID,
-        SIZE_EXTENSION_ID - 1,
-        lpszIniFile
-    );
 }

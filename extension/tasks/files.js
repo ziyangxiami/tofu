@@ -40,7 +40,7 @@ export default class Files extends Task {
             });
         } catch (e) {
             if (e.name != 'ConstraintError') {
-                this.logger.warning(e.message);
+                throw e;
             }
         }
     }
@@ -174,8 +174,7 @@ export default class Files extends Task {
         let settings = await Settings.load(TASK_FILES_SETTINGS);
         Settings.apply(this, settings);
         if (!this.cloudName) {
-            this.logger.warning('Missing setting of cloudinary cloud name.');
-            return;
+            throw new TaskError('请先配置 Cloudinary cloud name 后再同步图片');
         }
 
         await this.extractImages();
@@ -233,7 +232,8 @@ export default class Files extends Task {
                     throw new TaskError('Cloudinary 接口异常');
                 }
                 let savedData = await response.json();
-                if (response.status == 400 && !savedData?.error?.message?.startsWith('Error in loading http')) {
+                if (response.status < 200 || response.status >= 300 ||
+                    savedData?.error || !savedData?.public_id || !savedData?.secure_url) {
                     throw new TaskError('Cloudinary 接口返回错误');
                 }
                 await this.storage.files.update(row.id, {

@@ -51,7 +51,6 @@ export default class Doulist extends Task {
             // Default to 1 to allow checking via API in case count properties are absent in targetUser
             this.total = 1;
         }
-        await this.storage.table('version').put({table: 'doulist', version: version, updated: Date.now()});
 
         let baseURL = URL_DOULIST
             .replace('{ck}', this.session.cookies.ck)
@@ -84,10 +83,14 @@ export default class Doulist extends Task {
                     });
                     throw new TaskError('豆列接口响应格式错误');
                 }
-                if (typeof json.total === 'number') {
-                    this.total = Math.max(this.total, json.total);
-                    pageCount = Math.ceil(json.total / PAGE_SIZE);
+                const totalText = String(json.total ?? '');
+                const total = /^\d+$/.test(totalText) ? Number(totalText) : NaN;
+                if (!Number.isSafeInteger(total) || total < 0 ||
+                    (i * PAGE_SIZE < total && json.doulists.length === 0)) {
+                    throw new TaskError('豆列接口未返回有效总数或分页内容');
                 }
+                this.total = Math.max(this.total, total);
+                pageCount = Math.ceil(total / PAGE_SIZE);
                 for (let doulist of json.doulists) {
                     let doulistId = this.doulistId(doulist);
                     if (doulistId === null) {
@@ -120,13 +123,17 @@ export default class Doulist extends Task {
                         let fetch = await this.fetch
                         let response = await fetch(doulist.url + '?start=' + i * DOULIST_PAGE_SIZE);
                         if (response.status != 200) {
-                            if (response.status < 500) continue;
                             throw new TaskError('豆瓣服务器返回错误');
                         }
                         let html = this.parseHTML(await response.text());
-                        try {
-                            doulistTotalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
-                        } catch (e) {}
+                        const currentPage = html.querySelector('.paginator .thispage');
+                        if (currentPage) {
+                            const pageText = String(currentPage.dataset?.totalPage ?? currentPage.getAttribute('data-total-page') ?? '');
+                            doulistTotalPage = /^\d+$/.test(pageText) ? Number(pageText) : NaN;
+                            if (!Number.isSafeInteger(doulistTotalPage) || doulistTotalPage <= 0) {
+                                throw new TaskError('豆列分页信息无效，已保存此前内容');
+                            }
+                        }
                         for (let item of html.querySelectorAll('.doulist-item')) {
                             let addBtn = item.querySelector('.lnk-doulist-add');
                             if (!addBtn) continue;
@@ -220,6 +227,7 @@ export default class Doulist extends Task {
         if (invalidListIds > 0 || invalidItemIds > 0) {
             throw new TaskError('部分豆列缺少有效 ID，其他可识别内容已保存');
         }
+        await this.storage.table('version').put({table: 'doulist', version: version, updated: Date.now()});
         this.complete();
     }
 

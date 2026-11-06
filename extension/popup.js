@@ -58,20 +58,23 @@ class PopupMenu {
         let service = ServiceProxy.getProxy();
         let menu = new PopupMenu('.menu', service);
 
-        let status = 0;
+        let status;
         try {
             status = await service.getProperty('status');
         } catch (e) {
             console.error('Failed to get status:', e);
         }
 
-        // 根据状态启用/禁用按钮 (0: STATE_STOPPED, 1: STATE_START_PENDING, 2: STATE_RUNNING, 3: STATE_STOP_PENDING)
-        if (status === 0) {
+        // Service.STATE_STOPPED = 1; pending/running states are 2, 3 and 4.
+        if (status === 1) {
             menu.enable('Start');
             menu.disable('Stop');
-        } else {
+        } else if ([2, 3, 4].includes(status)) {
             menu.disable('Start');
             menu.enable('Stop');
+        } else {
+            menu.disable('Start');
+            menu.disable('Stop');
         }
 
         // 绑定点击事件

@@ -10,10 +10,11 @@ export default class Settings {
                     continue;
                 }
                 let lastNode = keyPath.pop();
+                let receiver = target;
                 for (let node of keyPath) {
-                    target = target[node];
+                    receiver = receiver[node];
                 }
-                target[lastNode] = settings[key];
+                receiver[lastNode] = settings[key];
             } catch (e) {
                 console.error(e)
             }

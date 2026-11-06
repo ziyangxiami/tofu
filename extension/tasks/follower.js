@@ -1,6 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
+import {numericId, validatePage, htmlPageCount} from './_validation.js';
 
 const API_PAGE_SIZE = 50;
 const WEB_PAGE_SIZE = 20;
@@ -24,8 +25,10 @@ export default class Follower extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let json = await response.json();
-            pageCount = Math.ceil(json.total / API_PAGE_SIZE);
+            this.total = validatePage(json, 'users', i * API_PAGE_SIZE);
+            pageCount = Math.ceil(this.total / API_PAGE_SIZE);
             for (let user of json.users) {
+                numericId(user?.id, '用户');
                 let row = {
                     version: this.jobId,
                     user: user,
@@ -45,9 +48,10 @@ export default class Follower extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let html = this.parseHTML(await response.text());
-            try {
-                totalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
-            } catch (e) {}
+            if (!html.querySelector('.user-list')) {
+                throw new TaskError('无法识别被关注列表，请确认登录状态或页面是否需要验证');
+            }
+            totalPage = htmlPageCount(html);
             for (let li of html.querySelectorAll('.user-list>li')) {
                 let idText = li.id ? li.id.substr(1) : '';
                 let avatar = li.querySelector('.face');
@@ -99,9 +103,10 @@ export default class Follower extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let html = this.parseHTML(await response.text());
-            try {
-                totalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
-            } catch (e) {}
+            if (!html.querySelector('.obu')) {
+                throw new TaskError('无法识别被关注列表，请确认页面是否需要验证');
+            }
+            totalPage = htmlPageCount(html);
             for (let anchor of html.querySelectorAll('.obu .nbg')) {
                 let avatar = anchor.querySelector('img');
                 let avatarSrc = avatar ? (avatar.getAttribute('src') || '') : '';
@@ -130,12 +135,8 @@ export default class Follower extends Task {
     }
 
     async run() {
+        await this.storage.follower.where('version').equals(this.jobId).delete();
         this.total = (this.targetUser && this.targetUser.followers_count) || 0;
-        await this.storage.table('version').put({table: 'follower', version: this.jobId, updated: Date.now()});
-        if (this.total === 0) {
-            this.complete();
-            return;
-        }
         if (this.total > 5000) {
             this.isOtherUser ?
                 await this.crawlOtherUserByWebpage() :
@@ -143,6 +144,7 @@ export default class Follower extends Task {
         } else {
             await this.crawlByApi();
         }
+        await this.storage.table('version').put({table: 'follower', version: this.jobId, updated: Date.now()});
         this.complete();
     }
 

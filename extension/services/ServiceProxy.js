@@ -8,18 +8,19 @@ export default class ServiceProxy {
      * @returns {Proxy}
      */
     constructor(port) {
-        let eventTarget = new EventTarget();
+        const eventTarget = new EventTarget();
         let callIdCounter = 1;
-        let pendingCalls = new Map();
-        
-        // Listen to events from the port
+        let disconnected = false;
+        const pendingCalls = new Map();
+
         port.onMessage.addListener(message => {
             if (message.type === 'syscall') {
-                eventTarget.dispatchEvent(new CustomEvent(message.id, {
-                    detail: { return: message.return, error: message.error }
-                }));
+                const pending = pendingCalls.get(message.id);
+                if (!pending) return;
+                pendingCalls.delete(message.id);
+                if (message.error) pending.reject(new Error(message.error));
+                else pending.resolve(message.return);
             } else if (message.type) {
-                // Forward events for UI updates
                 eventTarget.dispatchEvent(new CustomEvent(message.type, {
                     detail: message.detail !== undefined ? message.detail : message
                 }));
@@ -27,77 +28,40 @@ export default class ServiceProxy {
         });
 
         port.onDisconnect.addListener(() => {
-            const err = new Error('Service Worker 连接已断开');
-            for (let [callId, reject] of pendingCalls.entries()) {
-                reject(err);
-            }
+            disconnected = true;
+            const error = new Error('Service Worker 连接已断开，请刷新页面后重试');
+            for (const pending of pendingCalls.values()) pending.reject(error);
             pendingCalls.clear();
         });
 
-        // Add standard EventTarget listener capability to proxy
-        eventTarget.originalAddEventListener = eventTarget.addEventListener;
+        const call = (method, args, isProperty = false) => new Promise((resolve, reject) => {
+            if (disconnected) {
+                reject(new Error('Service Worker 连接已断开，请刷新页面后重试'));
+                return;
+            }
+            const id = String(callIdCounter++);
+            // Register before sending: a reply or disconnect can arrive during
+            // postMessage, and a serialization error must reject this same call.
+            pendingCalls.set(id, {resolve, reject});
+            try {
+                port.postMessage({type: 'syscall', id, method, args, isProperty});
+            } catch (error) {
+                pendingCalls.delete(id);
+                reject(error);
+            }
+        });
 
         return new Proxy(eventTarget, {
-            get(target, property, receiver) {
-                // Proxy EventTarget methods natively
-                if (property === 'addEventListener') {
-                    return (...args) => target.originalAddEventListener.apply(target, args);
-                }
-                
+            get(target, property) {
                 if (property in target) {
-                    const val = target[property];
-                    if (typeof val === 'function') {
-                        return (...args) => val.apply(target, args);
-                    }
-                    return val;
+                    const value = target[property];
+                    return typeof value === 'function' ? value.bind(target) : value;
                 }
-
-                // Any unknown property becomes an RPC to the background service!
-                // If it's a known property request function
-                if (property === 'getProperty') {
-                    return (propName) => {
-                        let callId = (callIdCounter ++).toString();
-                        port.postMessage({
-                            type: 'syscall',
-                            id: callId,
-                            method: propName, 
-                            isProperty: true
-                        });
-                        return new Promise((resolve, reject) => {
-                            pendingCalls.set(callId, reject);
-                            target.originalAddEventListener(callId, event => {
-                                pendingCalls.delete(callId);
-                                if (event.detail && event.detail.error) {
-                                    reject(new Error(event.detail.error));
-                                } else {
-                                    resolve(event.detail ? event.detail.return : undefined);
-                                }
-                            }, {once: true});
-                        });
-                    }
-                }
-
-                // Normal method call RPC
-                return (...args) => {
-                    let callId = (callIdCounter ++).toString();
-                    port.postMessage({
-                        type: 'syscall',
-                        id: callId,
-                        method: property,
-                        args: args
-                    });
-                    return new Promise((resolve, reject) => {
-                        pendingCalls.set(callId, reject);
-                        target.originalAddEventListener(callId, event => {
-                            pendingCalls.delete(callId);
-                            if (event.detail && event.detail.error) {
-                                reject(new Error(event.detail.error));
-                            } else {
-                                resolve(event.detail ? event.detail.return : undefined);
-                            }
-                        }, {once: true});
-                    });
-                }
+                // A service proxy is not a thenable. Promise assimilation and
+                // reflection must not accidentally invoke background methods.
+                if (property === 'then' || typeof property === 'symbol') return undefined;
+                if (property === 'getProperty') return name => call(name, undefined, true);
+                return (...args) => call(property, args);
             }
         });
     }

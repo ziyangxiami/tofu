@@ -151,7 +151,7 @@ class GeneralPanel {
 
         let TextInput = class extends Control {
             set value(value) {
-                value && (this.element.value = value);
+                this.element.value = value ?? '';
             }
 
             get value() {

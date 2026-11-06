@@ -19,6 +19,14 @@ import Note from './tasks/note.js';
 import Photo from './tasks/photo.js';
 import Review from './tasks/review.js';
 import Status from './tasks/status.js';
+import Storage from './storage.js';
+import MigrateAnnotation from './tasks/migrate/annotation.js';
+import MigrateBlacklist from './tasks/migrate/blacklist.js';
+import MigrateFollow from './tasks/migrate/follow.js';
+import MigrateInterest from './tasks/migrate/interest.js';
+import MigrateNote from './tasks/migrate/note.js';
+import MigrateReview from './tasks/migrate/review.js';
+import {validId} from './tasks/migrate/MigrationTask.js';
 
 const TASK_MODULES = {
     'annotation': Annotation,
@@ -34,7 +42,13 @@ const TASK_MODULES = {
     'note': Note,
     'photo': Photo,
     'review': Review,
-    'status': Status
+    'status': Status,
+    'migrate/annotation': MigrateAnnotation,
+    'migrate/blacklist': MigrateBlacklist,
+    'migrate/follow': MigrateFollow,
+    'migrate/interest': MigrateInterest,
+    'migrate/note': MigrateNote,
+    'migrate/review': MigrateReview,
 };
 
 /**
@@ -62,6 +76,7 @@ export default class Service extends EventTarget {
         super();
         this._currentJob = null;
         this._ports = new Map();
+        this._portCounter = 0;
         this._jobQueue = new AsyncBlockingQueue();
         this._continuations = [];
         this._status = Service.STATE_STOPPED;
@@ -101,7 +116,8 @@ export default class Service extends EventTarget {
         // while the singleton startup loop waits forever on an empty queue.
         const instance = service || new Service();
         instance._currentJob = json._currentJob ? Job.fromJSON(json._currentJob, instance, instance.storage) : null; // 反序列化当前任务
-        instance._ports = new Map(json._ports); // 将数组转换回 Map
+        // Ports belong to this worker. In particular, keep connections accepted
+        // while the asynchronous restore was still loading its snapshot.
         instance._status = json._status;
         instance.lastRequest = json.lastRequest;
         instance._debug = json._debug;
@@ -215,7 +231,7 @@ export default class Service extends EventTarget {
         }
         let tab = port.sender ? port.sender.tab : null;
         if (tab) {
-            port._portId = `${port.name}-${tab.windowId}-${tab.id}`;
+            port._portId = `${port.name}-${tab.windowId}-${tab.id}-${++this._portCounter}`;
         } else {
             port._portId = `${port.name}-${(port.sender && port.sender.id) || 'ext'}-${Math.random().toString(36).substring(2, 9)}`;
         }
@@ -275,6 +291,9 @@ export default class Service extends EventTarget {
             case 'syscall':
             let retVal;
             try {
+                // The listener is registered synchronously on worker startup;
+                // don't let an early UI request race with restoring its state.
+                await this._initialization;
                 if (message.isProperty) {
                     retVal = this[message.method];
                 } else {
@@ -287,17 +306,17 @@ export default class Service extends EventTarget {
                         retVal = true;
                     }
                 }
-                port.postMessage({
+                this.postMessage(port, {
                     type: message.type,
                     id: message.id,
                     return: retVal
                 });
             } catch (e) {
                 console.error("RPC error:", e);
-                port.postMessage({
+                this.postMessage(port, {
                     type: message.type,
                     id: message.id,
-                    error: e.toString()
+                    error: String(e)
                 });
             }
             break;
@@ -348,7 +367,7 @@ export default class Service extends EventTarget {
      * Start handling task queue
      */
     async start() {
-        console.log("service start", this._jobQueue)
+        console.log("service start")
         let originalState = this._status;
         if (originalState !== Service.STATE_STOPPED) return false;
         this._status = Service.STATE_START_PENDING;
@@ -390,25 +409,76 @@ export default class Service extends EventTarget {
      * @param  {Array} tasks
      * @param  {boolean} isOffline
      */
-    async createJob(targetUserId, localUserId, tasks, isOffline = false) {
-        console.log(`service createJob targetUserId ${targetUserId} localUserId ${localUserId} isOffline ${isOffline}`, tasks)
-        this.logger.debug('Creating a job...');
-        let job = new Job(this, targetUserId, localUserId, isOffline);
-        for (let {name, args} of tasks) {
-            try {
-                let taskName = name.toLowerCase();
-                if (!TASK_MODULES[taskName]) throw new Error('Unknown task: ' + name);
-                let module = TASK_MODULES[taskName];
-                if (typeof args == 'undefined') {
-                    args = [];
-                }
-                let task = new module(...args);
-                console.log("add task", task)
-                job.addTask(task);
-            } catch (e) {
-                console.error('Fail to create task:' + e)
-                this.logger.error('Fail to create task:' + e);
+    async previewMigration(localUserId, tasks) {
+        const sourceUserId = validId(localUserId);
+        if (!Array.isArray(tasks) || !tasks.length) throw new Error('请选择迁移项目。');
+        const selections = tasks.map(({name}) => {
+            const key = String(name).toLowerCase();
+            const TaskClass = TASK_MODULES[key];
+            if (!key.startsWith('migrate/') || !TaskClass?.sourceTable) throw new Error('不支持的迁移项目。');
+            return {name: key, table: TaskClass.sourceTable, label: new TaskClass().name};
+        });
+        const storage = new Storage(sourceUserId);
+        try {
+            await storage.global.open();
+            const source = await storage.global.account.get({userId: sourceUserId});
+            if (!source) throw new Error('找不到来源备份账号。');
+            await storage.local.open();
+            for (const selection of selections) {
+                const version = await storage.local.table('version').get(selection.table);
+                if (!version || !Number.isSafeInteger(version.version)) throw new Error(`${selection.label}没有已完成的备份。`);
+                selection.version = version.version;
+                selection.count = await storage.local.table(selection.table).filter(row => row.version === version.version).count();
             }
+            // Preview performs reads even while the backup worker is stopped.
+            const previewService = {requestInterval: this.requestInterval, logger: this.logger,
+                continue: async () => {}, dispatchEvent: () => {}};
+            const session = await new Job(previewService, null, null, false).checkin();
+            return {sourceUserId, sourceName: source.username || String(sourceUserId),
+                destinationUserId: session.userId, destinationName: session.username, selections};
+        } finally {
+            storage.global.close();
+            if (storage._local) storage.local.close();
+        }
+    }
+
+    async createJob(targetUserId, localUserId, tasks, isOffline = false, migrationPlan = null) {
+        this.logger.debug('Creating a job...');
+        if (!Array.isArray(tasks) || tasks.length === 0) {
+            throw new Error('请至少选择一个有效的备份任务。');
+        }
+        let job = new Job(this, targetUserId, localUserId, isOffline);
+        const migrating = tasks.some(task => String(task?.name).toLowerCase().startsWith('migrate/'));
+        if (migrating && (isOffline || targetUserId || tasks.some(task => !String(task?.name).toLowerCase().startsWith('migrate/')))) {
+            throw new Error('迁移任务不能与备份任务混用，也不能离线执行。');
+        }
+        if (migrating && (!migrationPlan || validId(localUserId) !== migrationPlan.sourceUserId)) {
+            throw new Error('请先预览并确认迁移的来源和目标账号。');
+        }
+        const selected = new Set();
+        for (let {name, args} of tasks) {
+            const taskName = typeof name === 'string' ? name.toLowerCase() : '';
+            if (!Object.prototype.hasOwnProperty.call(TASK_MODULES, taskName)) {
+                throw new Error('不支持的任务类型：' + String(name));
+            }
+            if (args === undefined) args = [];
+            if (!Array.isArray(args)) throw new Error('任务参数格式错误：' + name);
+            // Construct the entire selection before enqueuing anything. A bad
+            // item must not silently produce an empty or incomplete backup.
+            const TaskClass = TASK_MODULES[taskName];
+            const task = new TaskClass(...args);
+            if (selected.has(taskName)) throw new Error('迁移或备份项目不能重复。');
+            selected.add(taskName);
+            if (migrating) {
+                const selection = migrationPlan.selections?.find(item => item.name === taskName);
+                if (!selection || selection.table !== TaskClass.sourceTable || !Number.isSafeInteger(selection.version)) {
+                    throw new Error('迁移预览已失效，请重新确认。');
+                }
+                task.checkpoint = {kind: 'migration-v1', sourceUserId: validId(localUserId),
+                    destinationUserId: validId(migrationPlan.destinationUserId), sourceVersion: selection.version,
+                    receipts: {}};
+            }
+            job.addTask(task);
         }
         this._jobQueue.enqueue(job);
         await this.saveState();
@@ -494,21 +564,20 @@ export default class Service extends EventTarget {
     }
 
     static async getInstance() {
-        // console.log(`getInstance _instance存在吗？ ${!!Service._instance}`)
         if (!Service._instance) {
-            let storedData = await chrome.storage.session.get("serviceState");
-            if (storedData.serviceState) {
-                console.log("🔄 从存储恢复 Service 状态...");
-                Service._instance = new Service();
-                await Service._instance.restoreState();
-            } else {
-                console.log("🆕 创建新的 Service 实例...");
-                Service._instance = new Service();
-            }
-            await Service._instance.loadSettings()
-            Service.startup();
+            // Register onConnect before the first await and publish the instance
+            // immediately so simultaneous wake/install requests share one init.
+            const instance = Service._instance = new Service();
+            instance._initialization = (async () => {
+                await instance.restoreState();
+                await instance.loadSettings();
+                return instance;
+            })();
+            instance._initialization.then(() => {
+                Service.startup().catch(error => console.error('Service startup failed:', error));
+            }, error => console.error('Service initialization failed:', error));
         }
-        return Service._instance;
+        return Service._instance._initialization || Service._instance;
     }
 
     async saveState() {
@@ -613,10 +682,15 @@ export default class Service extends EventTarget {
         let requestChain = Promise.resolve();
 
         let executeFetch = async (resource, init, continuous, retries) => {
-            await service.continue();
-            let attemptsLeft = retries;
+            const method = String(init?.method ??
+                (typeof Request !== 'undefined' && Request.prototype.isPrototypeOf(resource) ? resource.method : 'GET'))
+                .toUpperCase();
+            // A failed response does not establish whether a write reached the
+            // server. Only safe read methods may be retried automatically.
+            let attemptsLeft = ['GET', 'HEAD', 'OPTIONS'].includes(method) ? retries : 0;
 
             while (true) {
+                await service.continue();
                 let interval = (service && typeof service.requestInterval === 'number') ? service.requestInterval : 1000;
                 let delay = continuous ? 0 : lastRequest + interval - Date.now();
                 if (delay > 0) {
@@ -626,15 +700,16 @@ export default class Service extends EventTarget {
                 }
 
                 try {
-                    let url = Request.prototype.isPrototypeOf(resource) ? resource.url : resource.toString();
-                    console.log(`Fetching ${url}... (interval: ${interval}ms)`, resource);
+                    // Request URLs can contain ck, and Request objects can carry
+                    // private bodies or headers. Keep them out of service logs.
+                    logger.debug(`Fetching request... (interval: ${interval}ms)`);
 
                     // 确保所有发给豆瓣的请求携带 credentials，否则会被当作未登录的机器流量拦截
                     let fetchInit = Object.assign({ credentials: 'include' }, init);
 
                     // 直接使用传入的 init 参数，不再修改 Header
                     let response = await fetch(resource, fetchInit);
-                    lastRequest = Date.now();
+                    logger.debug(`Fetch response status: ${response.status}`);
                     service.dispatchEvent(new Event("progress"));
                     return response;
                 } catch (error) {
@@ -646,6 +721,10 @@ export default class Service extends EventTarget {
                     logger.debug(error);
                     logger.debug(`Attempt to fetch ${attemptsLeft} times...`);
                     attemptsLeft--;
+                } finally {
+                    // Failed network attempts count toward the same interval;
+                    // otherwise retries can hammer the site without a pause.
+                    lastRequest = Date.now();
                 }
             }
         };

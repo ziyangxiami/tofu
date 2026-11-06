@@ -1,6 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
+import {numericId, validatePage} from './_validation.js';
 
 
 const PAGE_SIZE = 50;
@@ -12,20 +13,17 @@ export default class Note extends Task {
         let fetch = await this.fetch
         let response = await fetch(url);
         if (response.status != 200) {
-            return '';
+            throw new TaskError('日记正文获取失败，已保留旧备份');
         }
         let html = this.parseHTML(await response.text());
         let node = html.querySelector('#link-report>.note') || html.querySelector('#link-report') || html.querySelector('.note-content');
-        return node ? node.innerHTML : '';
+        if (!node) throw new TaskError('无法识别日记正文，已保留旧备份');
+        return node.innerHTML;
     }
 
     async run() {
         let version = this.jobId;
         this.total = (this.targetUser && this.targetUser.notes_count) || 0;
-        if (this.total == 0) {
-            return;
-        }
-        await this.storage.table('version').put({table: 'note', version: version, updated: Date.now()});
 
         let baseURL = URL_NOTES
             .replace('{ck}', this.session?.cookies?.ck || '')
@@ -39,9 +37,10 @@ export default class Note extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let json = await response.json();
-            pageCount = Math.ceil((parseInt(json.total) || 0) / PAGE_SIZE);
+            this.total = validatePage(json, 'notes', i * PAGE_SIZE);
+            pageCount = Math.ceil(this.total / PAGE_SIZE);
             for (let note of json.notes) {
-                let row = await this.storage.note.get(parseInt(note.id));
+                let row = await this.storage.note.get(numericId(note.id, '日记'));
                 if (row) {
                     let lastVersion = row.version;
                     row.version = version;
@@ -54,7 +53,7 @@ export default class Note extends Task {
                 } else {
                     note.fulltext = await this.fetchNote(note.url);
                     row = {
-                        id: parseInt(note.id),
+                        id: numericId(note.id, '日记'),
                         version: version,
                         note: note,
                     }
@@ -63,6 +62,7 @@ export default class Note extends Task {
                 this.step();
             }
         }
+        await this.storage.table('version').put({table: 'note', version: version, updated: Date.now()});
         this.complete();
     }
 

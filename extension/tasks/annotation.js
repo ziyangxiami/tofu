@@ -14,20 +14,22 @@ export default class Annotation extends Task {
         let fetch = await this.fetch
         let response = await fetch(url);
         if (response.status !== 200) {
-            return '';
+            throw new TaskError('读书笔记正文获取失败，已保留旧备份');
         }
         let html = this.parseHTML(await response.text());
         let node = html.querySelector('#link-report') || html.querySelector('.article') || html.querySelector('.annotation-content');
-        return node ? node.innerHTML : '';
+        if (!node) throw new TaskError('无法识别读书笔记正文，已保留旧备份');
+        return node.innerHTML;
     }
 
     async fetchWebAnnotation(url, fallbackText = '') {
         let response = await this.fetch(url);
         if (response.status !== 200) {
-            return { fulltext: fallbackText };
+            throw new TaskError('读书笔记正文获取失败，已保留旧备份');
         }
         let html = this.parseHTML(await response.text());
         let content = html.querySelector('#link-report');
+        if (!content) throw new TaskError('无法识别读书笔记正文，已保留旧备份');
         let created = html.querySelector('.annotation-info .pubtime');
         let reads = html.querySelector('.rnote .pl.info span');
         let rating = html.querySelector('.profile [class*="rating"]');
@@ -166,11 +168,11 @@ export default class Annotation extends Task {
 
     async run() {
         let version = this.jobId;
-        await this.storage.table('version').put({table: 'annotation', version: version, updated: Date.now()});
 
         if (this.checkpoint?.kind === 'annotation-web') {
             await this.crawlWebpage(version);
             this.total = Math.max(this.total, this.completion);
+            await this.storage.table('version').put({table: 'annotation', version: version, updated: Date.now()});
             this.complete();
             return;
         }
@@ -243,6 +245,7 @@ export default class Annotation extends Task {
             await this.crawlWebpage(version);
         }
         this.total = Math.max(this.total, this.completion);
+        await this.storage.table('version').put({table: 'annotation', version: version, updated: Date.now()});
         this.complete();
     }
 

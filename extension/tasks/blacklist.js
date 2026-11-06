@@ -1,6 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
+import {htmlPageCount} from './_validation.js';
 
 const URL_BLACKLIST = 'https://www.douban.com/contacts/blacklist?start={start}';
 const URL_USER_INFO = 'https://m.douban.com/rexxar/api/v2/user/{uid}?ck={ck}&for_mobile=1';
@@ -14,8 +15,7 @@ export default class Blacklist extends Task {
             throw new TaskError('不能备份其他用户的黑名单');
         }
 
-        await this.storage.table('version').put({table: 'blacklist', version: this.jobId, updated: Date.now()});
-
+        await this.storage.blacklist.where('version').equals(this.jobId).delete();
         let totalPage = this.total = 1;
 
         for (let i = 0; i < totalPage; i ++) {
@@ -25,9 +25,10 @@ export default class Blacklist extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let html = this.parseHTML(await response.text());
-            try {
-                this.total = totalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
-            } catch (e) {}
+            if (!html.querySelector('.obss.namel')) {
+                throw new TaskError('无法识别黑名单列表，请确认登录状态或页面是否需要验证');
+            }
+            this.total = totalPage = htmlPageCount(html);
             for (let dl of html.querySelectorAll('.obss.namel>dl')) {
                 let avatar = dl.querySelector('.imgg');
                 let avatarSrc = avatar ? (avatar.getAttribute('src') || '') : '';
@@ -67,6 +68,7 @@ export default class Blacklist extends Task {
             }
             this.step();
         }
+        await this.storage.table('version').put({table: 'blacklist', version: this.jobId, updated: Date.now()});
         this.complete();
     }
 

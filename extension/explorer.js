@@ -7,6 +7,12 @@ import ServiceProxy from "./services/ServiceProxy.js";
 
 const PAGE_SIZE = 50;
 
+function formatRating(subject) {
+    const value = subject?.rating?.value;
+    const rating = value === null || value === undefined || value === '' ? NaN : Number(value);
+    return Number.isFinite(rating) ? rating.toFixed(1) : (subject?.null_rating_reason || '');
+}
+
 
 /**
  * Class Modal
@@ -154,6 +160,7 @@ class SegmentsPanel extends Panel {
             $segmentLinks.parent().removeClass('is-active');
             $target.parent().addClass('is-active');
             this.onToggle($target);
+            this.page = 1;
             this.clear();
             this.total = await this.load();
             this.paging();
@@ -466,8 +473,8 @@ class Interest extends SegmentsPanel {
             if (interest.subject.null_rating_reason) {
                 $interest.find('.rating').text(subject.null_rating_reason);
             } else {
-                $interest.find('.rating-value').text(subject.rating.value.toFixed(1));
-                $interest.find('.rating-count').text(subject.rating.count);
+                $interest.find('.rating-value').text(formatRating(subject));
+                $interest.find('.rating-count').text(subject.rating?.count || '');
             }
             $interest.find('.subtitle').text(subject.card_subtitle);
             $interest.find('.create-time').text(interest.create_time);
@@ -582,8 +589,8 @@ class Review extends SegmentsPanel {
             if (review.subject.null_rating_reason) {
                 $review.find('.rating').text(review.subject.null_rating_reason);
             } else {
-                $review.find('.rating-value').text(review.subject.rating.value.toFixed(1));
-                $review.find('.rating-count').text(review.subject.rating.count);
+                $review.find('.rating-value').text(formatRating(review.subject));
+                $review.find('.rating-count').text(review.subject.rating?.count || '');
             }
             $review.find('.create-time').text(review.create_time);
             if (review.rating) {
@@ -796,8 +803,8 @@ class Annotation extends Panel {
                 if (subject.null_rating_reason) {
                     $annotation.find('.rating').text(subject.null_rating_reason);
                 } else {
-                    $annotation.find('.rating-value').text(subject.rating.value.toFixed(1));
-                    $annotation.find('.rating-count').text(subject.rating.count);
+                    $annotation.find('.rating-value').text(formatRating(subject));
+                    $annotation.find('.rating-count').text(subject.rating?.count || '');
                 }
             } else {
                 $annotation = $(TEMPLATE_ANNOTATION);
@@ -1553,7 +1560,7 @@ class Exporter {
                         create_time,
                         is_private
                     } = row.interest;
-                    let ratingStr = subject?.rating?.value ? subject.rating.value.toFixed(1) : (subject?.null_rating_reason || '');
+                    let ratingStr = formatRating(subject);
                     let tagsStr = Array.isArray(tags) ? tags.join(',') : (tags ? String(tags) : '');
                     data.push([
                         subject?.title || '',
@@ -1957,7 +1964,13 @@ class MigrateModal {
 
         modal.element.querySelector('.button[name="migrate"]').addEventListener('click', async () => {
             let localUserId = parseInt(location.search.substr(1));
-            let job = await modal.createJob(localUserId);
+            let job;
+            try {
+                job = await modal.createJob(localUserId);
+            } catch (error) {
+                alert('创建迁移任务失败：' + (error?.message || error));
+                return;
+            }
             if (job) {
                 modal.close();
                 window.open(chrome.runtime.getURL('options.html#service'));
@@ -1981,7 +1994,10 @@ class MigrateModal {
         }
 
         const service = ServiceProxy.getProxy();
-        let job = await service.createJob(null, localUserId, tasks);
+        const plan = await service.previewMigration(localUserId, tasks);
+        const items = plan.selections.map(item => `${item.label}：${item.count} 条`).join('\n');
+        if (!confirm(`来源备份：${plan.sourceName}（${plan.sourceUserId}）\n目标账号：${plan.destinationName}（${plan.destinationUserId}）\n\n${items}\n\n确认将以上内容写入目标豆瓣账号？`)) return null;
+        let job = await service.createJob(null, localUserId, tasks, false, plan);
         return job;
     }
 

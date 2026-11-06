@@ -1,6 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
+import {htmlPageCount} from './_validation.js';
 
 
 const PAGE_SIZE = 20;
@@ -36,12 +37,13 @@ export default class Board extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let html =  this.parseHTML(await response.text());
-            try {
-                this.total = totalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
-            } catch (e) {}
+            this.total = totalPage = htmlPageCount(html);
 
             for (let li of html.querySelectorAll('#comments>.comment-item')) {
                 let messageId = parseInt(li.dataset?.cid || li.getAttribute('data-cid'));
+                if (!Number.isSafeInteger(messageId) || messageId <= 0) {
+                    throw new TaskError('留言缺少有效 ID');
+                }
                 if (messageId <= lastMessageId) {
                     totalPage = 0;
                     break;
@@ -79,7 +81,9 @@ export default class Board extends Task {
                 };
                 try {
                     await this.storage.board.add(row);
-                } catch (e) {}
+                } catch (e) {
+                    if (e.name !== 'ConstraintError') throw e;
+                }
             }
             this.step();
         }

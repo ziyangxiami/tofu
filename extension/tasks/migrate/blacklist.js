@@ -1,54 +1,14 @@
-'use strict';
-import Task from '../../services/Task.js';
-import TaskError from '../../services/TaskError.js';
+import MigrationTask, {validId, acknowledged} from './MigrationTask.js';
 
-
-const URL_FORBID = 'https://www.douban.com/j/contact/addtoblacklist';
-const PAGE_SIZE = 100;
-
-
-export default class MigrateBlacklist extends Task {
+export default class MigrateBlacklist extends MigrationTask {
+    static sourceTable = 'blacklist';
     async run() {
-        this.total = await this.storage.blacklist.count();
-        if (this.total == 0) {
-            return;
+        for await (const row of this.rows()) {
+            const uid = validId(row.user?.id);
+            await this.writeOnce(uid, () => this.post(
+                'https://www.douban.com/j/contact/addtoblacklist', this.form({people: uid})
+            ), acknowledged);
         }
-
-        let postData = new URLSearchParams();
-        postData.append('ck', this.session?.cookies?.ck || '');
-
-        let pageCount = Math.ceil(this.total / PAGE_SIZE);
-        for (let i = 0; i < pageCount; i ++) {
-            let rows = await this.storage.blacklist
-                .reverse().offset(PAGE_SIZE * i).limit(PAGE_SIZE)
-                .toArray();
-            for (let row of rows) {
-                let uid = row.user ? (row.user.id || row.user.uid) : '';
-                if (!uid) continue;
-                postData.set('people', uid);
-                let fetch = await this.fetch
-                let response = await fetch(URL_FORBID, {
-                    headers: {
-                        'X-Override-Referer': 'https://www.douban.com/',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'X-Override-Origin': 'https://www.douban.com',
-                    },
-                    method: 'POST',
-                    body: postData,
-                });
-                let result = await response.json();
-                if (result.result) {
-                    this.logger.info('Success to forbid user:' + uid);
-                } else {
-                    this.logger.warning('Fail to forbid user:' + uid);
-                }
-                this.step();
-            }
-        }
-        this.complete();
     }
-
-    get name() {
-        return '加黑名单';
-    }
+    get name() { return '加黑名单'; }
 }

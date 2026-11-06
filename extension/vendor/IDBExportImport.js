@@ -52,61 +52,46 @@ export function exportToJsonString(idbDatabase, cb) {
  * @return {void}
  */
 export function importFromJsonString(idbDatabase, jsonString, cb) {
-  const objectStoreNamesSet = new Set(idbDatabase.objectStoreNames);
-  const size = objectStoreNamesSet.size;
-  if (size === 0) {
-    cb(null);
-  } else {
-    const objectStoreNames = Array.from(objectStoreNamesSet);
-    const transaction = idbDatabase.transaction(
-        objectStoreNames,
-        'readwrite'
-    );
-    transaction.onerror = (event) => cb(event);
-
+  let transaction;
+  let finished = false;
+  const finish = (error) => {
+    if (finished) return;
+    finished = true;
+    cb(error);
+  };
+  try {
     const importObject = JSON.parse(jsonString);
-
-    // Delete keys present in JSON that are not present in database
-    Object.keys(importObject).forEach((storeName)=> {
-      if (!objectStoreNames.includes(storeName)) {
-        delete importObject[storeName];
-      }
-    });
-
-    if (Object.keys(importObject).length === 0) {
-      // no object stores exist to import for
-      cb(null);
+    if (!importObject || typeof importObject !== 'object' || Array.isArray(importObject)) {
+      throw new TypeError('Invalid database backup');
     }
-
-    objectStoreNames.forEach((storeName) => {
-      let count = 0;
-      const aux = Array.from(importObject[storeName]);
-      if (importObject[storeName] && aux.length > 0) {
-        aux.forEach((toAdd) => {
-          const request = transaction.objectStore(storeName).add(toAdd);
-          request.onsuccess = () => {
-            count++;
-            if (count === importObject[storeName].length) {
-              // added all objects for this store
-              delete importObject[storeName];
-              if (Object.keys(importObject).length === 0) {
-                // added all object stores
-                cb(null);
-              }
-            }
-          };
-          request.onerror = (event) => {
-            console.log(event);
-          };
-        });
-      } else {
-        delete importObject[storeName];
-        if (Object.keys(importObject).length === 0) {
-          // added all object stores
-          cb(null);
-        }
+    // Older backups may omit stores introduced by later schema versions.
+    const objectStoreNames = Array.from(idbDatabase.objectStoreNames)
+        .filter(storeName => Object.prototype.hasOwnProperty.call(importObject, storeName));
+    for (const storeName of objectStoreNames) {
+      if (!Array.isArray(importObject[storeName])) {
+        throw new TypeError('Invalid backup table: ' + storeName);
       }
-    });
+    }
+    if (!objectStoreNames.length) {
+      finish(null);
+      return;
+    }
+    transaction = idbDatabase.transaction(objectStoreNames, 'readwrite');
+    // Request success only means the write was queued; the transaction can
+    // still abort (including after its final request has succeeded).
+    transaction.oncomplete = () => finish(null);
+    transaction.onerror = event => finish(transaction.error || event.target.error || event);
+    transaction.onabort = event => finish(transaction.error || event.target.error || new Error('Database import aborted'));
+    for (const storeName of objectStoreNames) {
+      for (const row of importObject[storeName]) {
+        transaction.objectStore(storeName).add(row);
+      }
+    }
+  } catch (error) {
+    if (transaction) {
+      try { transaction.abort(); } catch (_) {}
+    }
+    finish(error);
   }
 }
 

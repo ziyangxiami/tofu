@@ -1,54 +1,14 @@
-'use strict';
-import Task from '../../services/Task.js';
-import TaskError from '../../services/TaskError.js';
+import MigrationTask, {validId, acknowledged} from './MigrationTask.js';
 
-
-const URL_FOLLOW = 'https://www.douban.com/j/contact/addcontact';
-const PAGE_SIZE = 100;
-
-
-export default class MigrateFollow extends Task {
+export default class MigrateFollow extends MigrationTask {
+    static sourceTable = 'following';
     async run() {
-        this.total = await this.storage.following.count();
-        if (this.total == 0) {
-            return;
+        for await (const row of this.rows()) {
+            const uid = validId(row.user?.id);
+            await this.writeOnce(uid, () => this.post(
+                'https://www.douban.com/j/contact/addcontact', this.form({people: uid})
+            ), acknowledged);
         }
-
-        let postData = new URLSearchParams();
-        postData.append('ck', this.session?.cookies?.ck || '');
-
-        let pageCount = Math.ceil(this.total / PAGE_SIZE);
-        for (let i = 0; i < pageCount; i ++) {
-            let rows = await this.storage.following
-                .reverse().offset(PAGE_SIZE * i).limit(PAGE_SIZE)
-                .toArray();
-            for (let row of rows) {
-                let uid = row.user ? (row.user.id || row.user.uid) : '';
-                if (!uid) continue;
-                postData.set('people', uid);
-                let fetch = await this.fetch
-                let response = await fetch(URL_FOLLOW, {
-                    headers: {
-                        'X-Override-Referer': 'https://www.douban.com/',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'X-Override-Origin': 'https://www.douban.com',
-                    },
-                    method: 'POST',
-                    body: postData,
-                });
-                let result = await response.json();
-                if (result.result) {
-                    this.logger.info('Success to follow user:' + uid);
-                } else {
-                    this.logger.warning('Fail to follow user:' + uid);
-                }
-                this.step();
-            }
-        }
-        this.complete();
     }
-
-    get name() {
-        return '加关注';
-    }
+    get name() { return '加关注'; }
 }

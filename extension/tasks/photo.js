@@ -1,6 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
+import {numericId, validatePage, htmlPageCount} from './_validation.js';
 
 
 const PAGE_SIZE = 50;
@@ -30,10 +31,6 @@ export default class Photo extends Task {
     async run() {
         let version = this.jobId;
         this.total = (this.targetUser && this.targetUser.photo_albums_count) || 0;
-        if (this.total == 0) {
-            return;
-        }
-        await this.storage.table('version').put({table: 'photo', version: version, updated: Date.now()});
 
         let baseURL = URL_PHOTOS
             .replace('{uid}', this.targetUser.id)
@@ -47,11 +44,11 @@ export default class Photo extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let json = await response.json();
-            pageCount = Math.ceil(json.total / PAGE_SIZE);
+            this.total = validatePage(json, 'photo_albums', i * PAGE_SIZE);
+            pageCount = Math.ceil(this.total / PAGE_SIZE);
             for (let album of json.photo_albums) {
-                let albumId = parseInt(album.id);
+                let albumId = numericId(album.id, '相册');
                 let albumPrivacy = album.privacy;
-                if (isNaN(albumId)) continue;
                 let albumRow = await this.storage.album.get(albumId);
                 if (albumRow) {
                     let lastVersion = albumRow.version;
@@ -72,15 +69,14 @@ export default class Photo extends Task {
                 let albumTotalPage = 1;
                 for (let i = 0; i < albumTotalPage; i ++) {
                     let fetch = await this.fetch
-                    let response = await fetch(album.url + '?m_start=' + i * ALBUM_PAGE_SIZE);
+                    let pageURL = new URL(album.url);
+                    pageURL.searchParams.set('m_start', i * ALBUM_PAGE_SIZE);
+                    let response = await fetch(pageURL.toString());
                     if (response.status != 200) {
-                        if (response.status < 500) continue;
                         throw new TaskError('豆瓣服务器返回错误');
                     }
                     let html = this.parseHTML(await response.text());
-                    try {
-                        albumTotalPage = parseInt(html.querySelector('.paginator .thispage').dataset.totalPage);
-                    } catch (e) {}
+                    albumTotalPage = htmlPageCount(html);
                     for (let photoAnchor of html.querySelectorAll('.photolst_photo')) {
                         let photoHref = photoAnchor.getAttribute('href') || '';
                         let match = photoHref.match(/https:\/\/www\.douban\.com\/photos\/photo\/(\d+)\//);
@@ -96,7 +92,7 @@ export default class Photo extends Task {
                             if (photoRow.photo.description != photoDescription ||
                                 photoRow.photo.cover != photoSrc) {
                                 !photoRow.history && (photoRow.history = {});
-                                photoRow.history[lastVersion] = photoRow.photo;
+                                photoRow.history[lastVersion] = JSON.parse(JSON.stringify(photoRow.photo));
                                 photoRow.photo.description = photoDescription;
                                 if (photoRow.photo.cover != photoSrc) {
                                     if (albumPrivacy != 'public') {
@@ -135,6 +131,7 @@ export default class Photo extends Task {
                 this.step();
             }
         }
+        await this.storage.table('version').put({table: 'photo', version: version, updated: Date.now()});
         this.complete();
     }
 

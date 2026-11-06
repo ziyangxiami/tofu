@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Offline IndexedDB transaction regression dependencies",
+  "devDependencies": {
+    "fake-indexeddb": "6.2.5"
+  }
+}

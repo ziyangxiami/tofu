@@ -1,6 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
+import {numericId, validatePage, totalCount} from './_validation.js';
 
 
 const PAGE_SIZE = 50;
@@ -19,7 +20,7 @@ export default class Interest extends Task {
             throw new TaskError('豆瓣服务器返回错误');
         }
         let json = await response.json();
-        return parseInt(json.total) || 0;
+        return totalCount(json);
     }
 
     compareInterest(l, r) {
@@ -44,18 +45,18 @@ export default class Interest extends Task {
     async processInterest(interest, version, type)
     {
         if (!interest || Object.keys(interest).length === 0) {
-            console.warn("Empty interest object received.");
-            return;
+            throw new TaskError('标记接口返回无效数据');
         }
-        let subjectId = parseInt(interest.subject?.id || 0);
-        let interestId = parseInt(interest.id);
+        let subjectId = numericId(interest.subject?.id, '条目');
+        let interestId = numericId(interest.id, '标记');
         let row = await this.storage.interest.get({ subject: subjectId });
+        let replacedId = null;
         if (row) {
             let lastVersion = row.version;
             let changed = false;
             row.version = version;
             if (row.id !== interestId) {
-                await this.storage.interest.delete(row.id);
+                replacedId = row.id;
                 row.id = interestId;
                 changed = true;
             } else {
@@ -77,17 +78,28 @@ export default class Interest extends Task {
                 interest: interest,
             };
         }
-        await this.storage.interest.put(row);
+        if (replacedId !== null) {
+            // The subject has a unique index. Replacing its primary key needs a
+            // short local transaction so a failed put cannot delete the backup.
+            await this.storage.transaction('rw', this.storage.interest, async () => {
+                await this.storage.interest.delete(replacedId);
+                await this.storage.interest.put(row);
+            });
+        } else {
+            await this.storage.interest.put(row);
+        }
         this.step();
     }
 
     async run() {
         let version = this.jobId;
+        let failedSlices = 0;
         this.total = await this.getTotal();
         if (this.total === 0) {
+            await this.storage.table('version').put({table: 'interest', version: version, updated: Date.now()});
+            this.complete();
             return;
         }
-        await this.storage.table('version').put({table: 'interest', version: version, updated: Date.now()});
 
         let baseURL = URL_INTERESTS
             .replace('{ck}', this.session?.cookies?.ck || '')
@@ -118,15 +130,15 @@ export default class Interest extends Task {
                                 let fetch = await this.fetch
                                 let response = await fetch(urlToFetchSliced, {headers: {'X-Override-Referer': 'https://m.douban.com/mine/' + type}});
                                 if (response.status !== 200) {
-                                    // skip douban server error
+                                    failedSlices++;
                                     continue;
                                 }
                                 let json = await response.json();
+                                const total = validatePage(json, 'interests', startSliced);
+                                pageCount = Math.ceil(total / PAGE_SIZE);
+                                if (startSliced >= total) break;
                                 for (let interest of json.interests) {
                                     await this.processInterest(interest, version, type);
-                                }
-                                if (json.total === startSliced) {
-                                    continue;
                                 }
                             }
                         } else {
@@ -135,13 +147,15 @@ export default class Interest extends Task {
                         continue;
                     }
                     let json = await response.json();
-                    pageCount = Math.ceil(json.total / PAGE_SIZE);
+                    pageCount = Math.ceil(validatePage(json, 'interests', start) / PAGE_SIZE);
                     for (let interest of json.interests) {
                         await this.processInterest(interest, version, type);
                     }
                 }
             }
         }
+        if (failedSlices) throw new TaskError('部分书影音标记获取失败，已保存可读取内容，请重试');
+        await this.storage.table('version').put({table: 'interest', version: version, updated: Date.now()});
         this.complete();
     }
 

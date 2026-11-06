@@ -1,6 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
+import {numericId, validatePage} from './_validation.js';
 import Storage  from "../storage.js";
 
 const PAGE_SIZE = 50;
@@ -12,27 +13,21 @@ export default class Review extends Task {
         let fetch = await this.fetch
         let response = await fetch(url);
         if (response.status !== 200) {
-            this.logger.error(`Failed to fetch review HTML from ${url}: Status ${response.status}`);
-            return '';
+            throw new TaskError('评论正文获取失败，已保留旧备份');
         }
         let htmlText = await response.text();
         let html = this.parseHTML(htmlText);
         let contentNode = html.querySelector('.review-content') || html.querySelector('#link-report') || html.querySelector('.article');
         
         if (!contentNode) {
-            this.logger.error(`Could not find review content in DOM for ${url}. Returning empty text.`);
-            return '';
+            throw new TaskError('无法识别评论正文，已保留旧备份');
         }
         return contentNode.innerHTML;
     }
 
     async run() {
         let version = this.jobId;
-        this.total = (this.targetUser && this.targetUser.reviews_count) || 0;
-        if (this.total === 0) {
-            return;
-        }
-        await this.storage.table('version').put({table: 'review', version: version, updated: Date.now()});
+        this.total = 0;
 
         let baseURL = URL_REVIEWS
             .replace('{ck}', this.session?.cookies?.ck || '')
@@ -47,10 +42,12 @@ export default class Review extends Task {
                     throw new TaskError('豆瓣服务器返回错误');
                 }
                 let json = await response.json();
-                pageCount = Math.ceil((parseInt(json.total) || 0) / PAGE_SIZE);
+                const total = validatePage(json, 'reviews', i * PAGE_SIZE);
+                if (i === 0) this.total += total;
+                pageCount = Math.ceil(total / PAGE_SIZE);
                 for (let review of json.reviews) {
                     let fulltext = await this.fetchReview(review.url);
-                    let row = await this.storage.review.get(parseInt(review.id));
+                    let row = await this.storage.review.get(numericId(review.id, '评论'));
                     if (row) {
                         let lastVersion = row.version;
                         row.version = version;
@@ -63,7 +60,7 @@ export default class Review extends Task {
                     } else {
                         review.fulltext = fulltext;
                         row = {
-                            id: parseInt(review.id),
+                            id: numericId(review.id, '评论'),
                             version: version,
                             type: type,
                             review: review,
@@ -74,6 +71,7 @@ export default class Review extends Task {
                 }
             }
         }
+        await this.storage.table('version').put({table: 'review', version: version, updated: Date.now()});
         this.complete();
     }
 

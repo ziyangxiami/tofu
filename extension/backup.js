@@ -47,7 +47,8 @@ class AccountList {
                 $account.find('.username').text(account.username);
                 $account.find('.user-symbol').text('@' + account.userSymbol);
                 $account.find('.reg-time').text(account.userInfo.reg_time);
-                $account.find('.backup-time').text(new Date(account.updated).toLocaleString());
+                $account.find('.backup-time').text(account.updated ?
+                    new Date(account.updated).toLocaleString() : '尚未完成备份');
                 $account.data('user-id', account.userId);
                 $account.appendTo($list);
             });
@@ -135,7 +136,13 @@ class TaskModal {
                     return false;
                 }
             }
-            let job = await modal.createJob(targetUserId);
+            let job;
+            try {
+                job = await modal.createJob(targetUserId);
+            } catch (error) {
+                alert('创建备份任务失败：' + (error?.message || error));
+                return;
+            }
             // await new Promise(resolve => setTimeout(resolve, 5000));
             if (job) {
                 // console.log("等待5s")

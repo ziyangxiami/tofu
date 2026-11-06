@@ -1,70 +1,27 @@
-'use strict';
-import Task from '../../services/Task.js';
+import MigrationTask, {validId, acknowledged} from './MigrationTask.js';
 import TaskError from '../../services/TaskError.js';
 
-
-const URL_INTEREST = {
-    movie: 'https://movie.douban.com/j/subject/{subject_id}/interest',
-    music: 'https://music.douban.com/j/subject/{subject_id}/interest',
-    book: 'https://book.douban.com/j/subject/{subject_id}/interest',
-    game: 'https://www.douban.com/j/ilmen/thing/{subject_id}/interest',
-    drama: 'https://www.douban.com/j/location/drama/{subject_id}/interest',
+const URLS = {
+    movie: 'https://movie.douban.com/j/subject/{id}/interest',
+    music: 'https://music.douban.com/j/subject/{id}/interest',
+    book: 'https://book.douban.com/j/subject/{id}/interest',
+    game: 'https://www.douban.com/j/ilmen/thing/{id}/interest',
+    drama: 'https://www.douban.com/j/location/drama/{id}/interest',
 };
+const MARKS = {mark: 'wish', doing: 'do', done: 'collect'};
 
-const MARKS = {
-    mark: 'wish',
-    doing: 'do',
-    done: 'collect',
-};
-
-const PAGE_SIZE = 100;
-
-
-export default class MigrateInterest extends Task {
+export default class MigrateInterest extends MigrationTask {
+    static sourceTable = 'interest';
     async run() {
-        this.total = await this.storage.interest.count();
-        if (this.total == 0) {
-            return;
+        for await (const row of this.rows()) {
+            const subject = validId(row.subject);
+            const interest = row.interest;
+            if (!interest || !URLS[row.type] || !MARKS[row.status]) throw new TaskError('标记类型或状态无效，迁移已停止。');
+            const data = this.form({foldcollect: 'F', rating: interest.rating?.value ?? '',
+                interest: MARKS[row.status], tags: Array.isArray(interest.tags) ? interest.tags.join(' ') : '',
+                comment: interest.comment || ''});
+            await this.writeOnce(`${row.type}:${subject}`, () => this.post(URLS[row.type].replace('{id}', subject), data), acknowledged);
         }
-
-        let postData = new URLSearchParams();
-        postData.append('ck', this.session?.cookies?.ck || '');
-        postData.append('foldcollect', 'F');
-
-        let pageCount = Math.ceil(this.total / PAGE_SIZE);
-        for (let i = 0; i < pageCount; i ++) {
-            let rows = await this.storage.interest
-                .offset(PAGE_SIZE * i).limit(PAGE_SIZE)
-                .toArray();
-            for (let row of rows) {
-                let interest = row.interest;
-                postData.set('rating', interest.rating ? interest.rating.value : '');
-                postData.set('interest', MARKS[row.status]);
-                postData.set('tags', Array.isArray(interest.tags) ? interest.tags.join(' ') : (interest.tags ? String(interest.tags) : ''));
-                let commentStr = (interest.comment ? interest.comment + ' ' : '') + (interest.create_time ? `@${interest.create_time}` : '');
-                postData.set('comment', commentStr.trim());
-
-                let fetch = await this.fetch
-                let targetURL = URL_INTEREST[row.type] ? URL_INTEREST[row.type].replace('{subject_id}', row.subject) : null;
-                if (!targetURL) continue;
-
-                let response = await fetch(targetURL, {
-                    headers: {
-                        'X-Override-Referer': 'https://www.douban.com/',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'X-Override-Origin': 'https://www.douban.com',
-                    },
-                    method: 'POST',
-                    body: postData,
-                });
-                let result = await response.json();
-                this.step();
-            }
-        }
-        this.complete();
     }
-
-    get name() {
-        return '标记影音书游剧';
-    }
+    get name() { return '标记影音书游剧'; }
 }
