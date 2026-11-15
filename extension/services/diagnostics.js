@@ -6,6 +6,7 @@ const EVENTS = new Set([
     'job.started', 'job.finished', 'task.started', 'task.finished', 'task.skipped',
     'annotation.api', 'annotation.fallback', 'annotation.page',
     'doulist.api', 'doulist.missing_tags', 'doulist.invalid_id', 'doulist.invalid_item_id',
+    'photo.invalid_id', 'photo.id_recovered', 'doumail.pagination',
 ]);
 const OUTCOMES = new Set(['completed', 'empty', 'failed']);
 const REASONS = new Set(['http_error', 'invalid_response', 'empty_response']);
@@ -47,10 +48,11 @@ export function recordDiagnostic(runId, event, details = {}) {
     const locationMatch = typeof details.errorStack === 'string' ?
         details.errorStack.match(/\/(tasks|services)\/([a-zA-Z0-9_/-]+\.js):(\d+)(?::\d+)?/) : null;
     const errorLocation = locationMatch ? `${locationMatch[1]}/${locationMatch[2]}:${locationMatch[3]}` : undefined;
-    for (const [key, value] of Object.entries({task, outcome, reason, listType, errorType, errorLocation})) {
+    const idType = ['missing', 'string', 'number', 'boolean', 'object'].includes(details.idType) ? details.idType : undefined;
+    for (const [key, value] of Object.entries({task, outcome, reason, listType, errorType, errorLocation, idType})) {
         if (value !== undefined) entry[key] = value;
     }
-    for (const key of ['status', 'apiTotal', 'apiGroups', 'count', 'total', 'pages', 'failedCount', 'emptyCount']) {
+    for (const key of ['status', 'apiTotal', 'apiGroups', 'count', 'total', 'pages', 'attempt', 'failedCount', 'emptyCount']) {
         const value = integer(details[key]);
         if (value !== undefined) entry[key] = value;
     }

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 
 <head>
     <meta charset="UTF-8">
@@ -30,23 +30,63 @@
             margin: 0;
             padding: 0;
         }
+        .job .task-name {
+            width: 20%;
+            white-space: nowrap;
+        }
+        .task-progress {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            min-height: 1.5rem;
+        }
+        .task-progress .progress {
+            flex: 1;
+            min-width: 0;
+            margin-bottom: 0;
+        }
+        .task-progress-text {
+            width: 13rem;
+            flex: none;
+            text-align: right;
+            white-space: nowrap;
+            font-size: 0.875rem;
+            font-variant-numeric: tabular-nums;
+        }
+        .progress-help {
+            margin-bottom: 1rem;
+        }
+        @media screen and (max-width: 600px) {
+            .task-progress {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.25rem;
+            }
+            .task-progress .progress {
+                flex: none;
+            }
+            .task-progress-text {
+                width: auto;
+            }
+        }
     </style>
+    <link rel="stylesheet" href="ui/app.css">
 </head>
 
-<body>
+<body class="settings-page">
     <nav class="navbar">
         <div class="container">
             <div class="navbar-brand">
-                <a class="navbar-item" href="https://doufen.org/" target="_blank">
-                    <img src="images/logo-main.png" alt="豆伴" title="豆伴">
+                <a class="navbar-item" href="backup.html" aria-label="豆伴备份首页">
+                    <img src="images/icon-48x48.png" alt=""><span class="brand-name">豆伴</span><span class="brand-note">我的豆瓣档案</span>
                 </a>
-                <a role="button" class="navbar-burger">
+                <button type="button" class="navbar-burger" aria-label="展开导航" aria-expanded="false">
                     <span aria-hidden="true"></span>
                     <span aria-hidden="true"></span>
                     <span aria-hidden="true"></span>
-                </a>
+                </button>
             </div>
-            <div class="navbar-menu">
+            <div class="navbar-menu" id="main-navigation">
                 <div class="navbar-end">
                     <div class="navbar-item">
                         <div class="buttons">
@@ -65,19 +105,20 @@
     <script src="./ui/navbar.js"></script>
 
     <section class="section">
+        <header class="container page-heading"><div><p class="eyebrow">WORKSPACE</p><h1>让每次备份，都有条不紊。</h1><p class="description">查看任务进度、管理账号，调整适合自己的备份节奏。</p></div><div class="heading-aside"><a class="button is-link" href="backup.html#new-task">＋ 新建备份</a></div></header>
         <div class="container">
             <div class="tabs is-centered is-boxed">
                 <ul>
-                    <li class="page-tab-link is-active" data-tab="general"><a href="#general">常规</a></li>
-                    <li class="page-tab-link" data-tab="account"><a href="#account">账号</a></li>
-                    <li class="page-tab-link" data-tab="service"><a href="#service">服务</a></li>
+                    <li class="page-tab-link is-active" data-tab="general"><a href="#general">备份设置</a></li>
+                    <li class="page-tab-link" data-tab="account"><a href="#account">登录账号</a></li>
+                    <li class="page-tab-link" data-tab="service"><a href="#service">任务中心</a></li>
                     <li class="page-tab-link" data-tab="help"><a href="#help">帮助</a></li>
                     <li class="page-tab-link" data-tab="about"><a href="#about">关于</a></li>
                 </ul>
             </div>
         </div>
 
-        <div class="container page-tab-content is-hidden" name="general">
+        <div class="container page-tab-content is-hidden" name="general"><h2 class="setting-heading">备份偏好</h2><p class="setting-description">设置请求节奏与图片存储方式。修改后点击保存。</p>
             <!--
             <div class="columns">
                 <div class="column is-10">
@@ -93,7 +134,7 @@
                     <label>输出调试信息</label>
                 </div>
                 <div class="column">
-                    <input type="checkbox" name="service.debug">
+                    <input type="checkbox" aria-label="输出调试信息" name="service.debug">
                 </div>
             </div>
             <div class="columns">
@@ -104,7 +145,7 @@
                 <div class="column">
                     <div class="field has-addons">
                         <p class="control">
-                            <input class="input" type="text" name="service.requestInterval">
+                            <input class="input" type="number" min="0.1" max="3600" step="0.1" required aria-label="请求间隔（秒）" name="service.requestInterval">
                         </p>
                         <p class="control">
                             <a class="button is-static">秒</a>
@@ -115,27 +156,27 @@
             <div class="columns">
                 <div class="column is-10">
                     <label>图片云存储 <a href="https://blog.doufen.org/posts/how-to-upload-images-to-cloudinary/" class="tag is-success">如何设置</a></label>
-                    <p class="help">允许将广播、日记、评论以及相册中的图片上传到 <a href="https://cloudinary.com/" target="_blank">Cloudinary</a> 云存储中。</p>
+                    <p class="help">允许将广播、日记、评论以及相册中的图片上传到 <a href="https://cloudinary.com/" target="_blank" rel="noopener noreferrer">Cloudinary</a> 云存储中。</p>
                 </div>
                 <div class="column">
                     <div class="field">
                         <p class="control">
-                            <input class="input" type="text" name="同步图片.cloudName" placeholder="Cloud name">
+                            <input class="input" type="text" name="同步图片.cloudName" placeholder="Cloud name" aria-label="Cloudinary cloud name">
                         </p>
                     </div>
                 </div>
             </div>
-            <div class="field is-grouped is-grouped-centered">
+            <div class="field is-grouped is-grouped-centered settings-actions">
                 <p class="control">
-                    <a class="button is-link" name="save">保存</a>
+                    <button class="button is-link" name="save">保存设置</button>
                 </p>
                 <p class="control">
-                    <a class="button" name="reset">重置</a>
+                    <button class="button" name="reset">恢复默认</button>
                 </p>
             </div>
         </div>
 
-        <div class="container page-tab-content is-hidden" name="account">
+        <div class="container page-tab-content is-hidden" name="account"><h2 class="setting-heading">当前登录账号</h2><p class="setting-description">从豆瓣获取登录状态；备份内容保存在本地浏览器中。</p>
             <article class="card is-hidden" id="account-error">
                 <div class="card-content">
                     <p class="has-text-centered">请先<a href="https://accounts.douban.com/passport/login">登录</a>豆瓣</p>
@@ -160,7 +201,7 @@
                 </div>
                 <div class="media-right">
                         <div class="field">
-                            <a href="https://www.douban.com/mine/" class="button" target="_blank">
+                            <a href="https://www.douban.com/mine/" class="button" target="_blank" rel="noopener noreferrer">
                                 <span>豆瓣主页</span>
                                 <span class="icon is-small">
                                     <i class="fas fa-chevron-right"></i>
@@ -168,13 +209,13 @@
                             </a>
                         </div>
                         <div class="field">
-                            <a class="button is-fullwidth" target="_blank" name="logout">退出</a>
+                            <a class="button is-fullwidth" target="_blank" rel="noopener noreferrer" name="logout">退出</a>
                         </div>
                 </div>
             </article>
         </div>
 
-        <div class="container page-tab-content is-hidden" name="service">
+        <div class="container page-tab-content is-hidden" name="service"><h2 class="setting-heading">任务中心</h2><p class="setting-description">查看当前任务的处理进度。停止后可以继续，已完成的项目无需重跑。</p>
             <div class="columns is-vcentered">
                 <div class="column is-10">
                     <label>服务状态：</label>
@@ -196,11 +237,13 @@
                     <button class="button service-ctrl is-loading is-hidden" name="loading">Loading</button>
                 </div>
             </div>
-            <table class="table is-fullwidth">
+            <div class="service-overview toolbar-meta" role="status"></div><p class="service-job-error inline-error is-hidden" role="alert"></p><table class="table is-fullwidth">
                 <tbody class="job"></tbody>
             </table>
+            <p class="help service-refresh-error has-text-danger is-hidden" role="status">连接中断或进度更新失败，已保留上次显示。<button class="button is-small" name="reconnect">重新连接</button></p>
+            <p class="help progress-help">数字为已处理 / 当前总量及百分比；“—”表示总量统计中。黑名单、留言板按页，豆邮按会话预估，其他按条目；总量可能随扫描更新。</p>
             <div class="content">
-                <div class="buttons">
+                <div class="buttons"><a class="button is-light" href="backup.html#new-task">＋ 新建备份</a>
                     <button class="button" type="button" name="download-diagnostics">下载诊断日志</button>
                     <a class="button is-light" href="https://github.com/ziyangxiami/tofu/issues" target="_blank" rel="noopener noreferrer">反馈问题</a>
                 </div>
@@ -232,11 +275,11 @@
                 <ol>
                     <li>
                         <p>备份过一次后，如果豆瓣上的内容被删除了，下次备份后数据还保留吗？</p>
-                        <blockquote>所有已备份的数据都不会因为多次备份而被清除。如果你发现有些备份项目背景为灰色，说明这个项目在豆瓣上被删除了。</blockquote>
+                        <blockquote>文字、相册等内容会保留已存档的历史记录；灰色条目表示本次扫描未找到，不一定代表内容已删除。关注、粉丝和黑名单按最近一次完整快照展示。</blockquote>
                     </li>
                     <li>
                         <p>为什么备份豆邮时进度条不会前进？</p>
-                        <blockquote>因为无法方便地获取豆邮的总数，所以也无法显示当前进度。</blockquote>
+                        <blockquote>豆邮按会话估算进度；数字中的“—”表示总量仍在统计。任务结束后可下载诊断日志查看结果。</blockquote>
                     </li>
                     <li>
                         <p>为什么备份时某个项目的进度条没有走完就跳到下一个项目了？</p>
@@ -257,28 +300,28 @@
                     <li>发现错误？<a href="https://github.com/ziyangxiami/tofu/issues" target="_blank" rel="noopener noreferrer">提交错误报告</a></li>
                     <li>电子邮件：<a href="mailto:tofu@doufen.org">tofu@doufen.org</a></li>
                     <li>关注社交账号：
-                        <a href="https://twitter.com/doufen-org" target="_blank">
+                        <a href="https://twitter.com/doufen-org" target="_blank" rel="noopener noreferrer">
                             <span class="icon">
                                 <i class="fab fa-twitter"></i>
                             </span>
                         </a>
-                        <a href="https://github.com/doufen-org" target="_blank">
+                        <a href="https://github.com/doufen-org" target="_blank" rel="noopener noreferrer">
                             <span class="icon">
                                 <i class="fab fa-github"></i>
                             </span>
                         </a>
-                        <a href="https://www.douban.com/people/doufen-org/" target="_blank">豆瓣</a>
+                        <a href="https://www.douban.com/people/doufen-org/" target="_blank" rel="noopener noreferrer">豆瓣</a>
                     </li>
                 </ul>
                 <h2 class="title is-size-5">网站</h2>
                 <ul>
-                    <li>博客：<a href="https://blog.doufen.org/" target="_blank">https://blog.doufen.org/</a></li>
-                    <li>GitHub主页：<a href="https://github.com/doufen-org" target="_blank">https://github.com/doufen-org</a></li>
-                    <li>豆瓣主页：<a href="https://www.douban.com/people/doufen-org/" target="_blank">https://www.douban.com/people/doufen-org/</a></li>
+                    <li>博客：<a href="https://blog.doufen.org/" target="_blank" rel="noopener noreferrer">https://blog.doufen.org/</a></li>
+                    <li>GitHub主页：<a href="https://github.com/doufen-org" target="_blank" rel="noopener noreferrer">https://github.com/doufen-org</a></li>
+                    <li>豆瓣主页：<a href="https://www.douban.com/people/doufen-org/" target="_blank" rel="noopener noreferrer">https://www.douban.com/people/doufen-org/</a></li>
                 </ul>
                 <h2 class="title is-size-5">支持</h2>
-                <p>Powered by <a href="https://doufen.org/" target="_blank">豆坟</a></p>
-                <p>使用前请仔细阅读我们的 <a href="https://blog.doufen.org/privacy-policy/" target="_blank">隐私权政策</a>。</p>
+                <p>Powered by <a href="https://doufen.org/" target="_blank" rel="noopener noreferrer">豆坟</a></p>
+                <p>使用前请仔细阅读我们的 <a href="https://blog.doufen.org/privacy-policy/" target="_blank" rel="noopener noreferrer">隐私权政策</a>。</p>
             </div>
         </div>
     </section>

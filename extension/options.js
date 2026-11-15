@@ -1,10 +1,11 @@
-import Settings from './settings.js';
-import Service, {SERVICE_SETTINGS} from './service.js';
+import Settings, {SERVICE_SETTINGS, TASK_FILES_SETTINGS} from './settings.js';
 import ServiceProxy from './services/ServiceProxy.js';
-import {TASK_FILES_SETTINGS} from './tasks/files.js';
 import Notification from './ui/notification.js';
 import TabPanel from './ui/tab.js';
 import {getDiagnosticReport} from './services/diagnostics.js';
+import TaskProgressList from './ui/task-progress.js';
+import UI from './ui/interactions.js';
+import Content from './ui/safe-content.js';
 
 
 class AccountPanel {
@@ -50,19 +51,21 @@ class AccountPanel {
             this.error.classList.remove('is-hidden');
             return;
         }
-        let response = await fetch(`https://m.douban.com/rexxar/api/v2/user/${uid}?ck=${ck}`, {headers: {'X-Override-Referer': 'https://m.douban.com/'}});
+        let response = await fetch(`https://m.douban.com/rexxar/api/v2/user/${uid}?ck=${encodeURIComponent(ck || '')}`, {credentials: 'include', signal: AbortSignal.timeout(20000), headers: {'X-Override-Referer': 'https://m.douban.com/'}});
         if (response.status != 200) {
             this.error.classList.remove('is-hidden');
             return;
         }
         let userInfo = await response.json();
-        this.panel.querySelector('.media-left>.image').innerHTML = `<img src="${userInfo.avatar}">`;
+        const avatar = document.createElement('img');
+        avatar.src = Content.url(userInfo.avatar); avatar.alt = '';
+        this.panel.querySelector('.media-left>.image').replaceChildren(avatar);
         this.panel.querySelector('.media-content [name="name"]').innerText = userInfo.name;
         this.panel.querySelector('.media-content [name="symbol"]').innerText = '@' + userInfo.uid;
         this.panel.querySelector('.media-content [name="reg-time"]').innerText = userInfo.reg_time;
         this.panel.querySelector('.media-content [name="intro"]').innerText = userInfo.intro;
         let logoutLink = this.panel.querySelector('.button[name="logout"]');
-        logoutLink.setAttribute('href', URL_LOGOUT.replace('{ck}', ck));
+        logoutLink.setAttribute('href', URL_LOGOUT.replace('{ck}', encodeURIComponent(ck || '')));
         logoutLink.addEventListener('click', event => {
             if (!confirm('确定要退出当前账号的登录状态吗？')) {
                 event.preventDefault();
@@ -83,7 +86,9 @@ class AccountPanel {
             let url = collection[item].url;
             let key = collection[item].key;
             column.classList.add('column');
-            column.innerHTML = `<p class="has-text-centered is-size-7"><a href="${url}" target="_blank">${userInfo[key]}<br>${item}</a></p>`
+            const link = document.createElement('a');
+            link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+            link.textContent = `${Number(userInfo[key]) || 0} ${item}`; column.append(link);
             collectionPanel.appendChild(column);
         }
         this.panel.classList.remove('is-hidden');
@@ -92,7 +97,13 @@ class AccountPanel {
     static async render() {
         let panel = new AccountPanel('#account',
             '#account-error');
-        let account = await panel.load();
+        try { await panel.load(); }
+        catch (_) {
+            panel.error.classList.remove('is-hidden');
+            const message = document.createElement('p'); message.className = 'help has-text-centered';
+            message.textContent = '账号信息暂时无法读取，请检查网络或完成豆瓣安全验证后刷新。';
+            panel.error.append(message);
+        }
     }
 }
 
@@ -122,7 +133,7 @@ class GeneralPanel {
         let BoolSwitch = class extends Control {
             constructor(name) {
                 super(name);
-                new Switchery(this.element);
+
             }
 
             set value(value) {
@@ -142,9 +153,7 @@ class GeneralPanel {
 
             get value() {
                 let seconds = parseFloat(this.element.value);
-                if (isNaN(seconds) || seconds < 0) {
-                    seconds = 1;
-                }
+                if (!Number.isFinite(seconds) || seconds < 0.1 || seconds > 3600) throw new Error('请求间隔需要在 0.1 至 3600 秒之间。');
                 return Math.round(seconds * 1000);
             }
         };
@@ -175,31 +184,41 @@ class GeneralPanel {
         this.saveButton = document.querySelector('.button[name="save"]');
         this.resetButton = document.querySelector('.button[name="reset"]');
 
-        this.saveButton.addEventListener('click', async () => {
-            for (let name in this.controls) {
-                this.settings[name] = this.controls[name].value;
-            }
-            await this.save(this.settings);
+        this.dirty = false;
+        this.status = document.createElement('p'); this.status.className = 'save-status';
+        this.status.setAttribute('role', 'status'); this.panel.append(this.status);
+        this.panel.addEventListener('input', () => {
+            this.dirty = true; this.status.textContent = '有未保存的修改';
         });
-
-        this.resetButton.addEventListener('click', async () => {
-            for (let name in this.controls) {
-                this.controls[name].value = this.defaults[name];
-            }
+        window.addEventListener('beforeunload', event => {
+            if (this.dirty) { event.preventDefault(); event.returnValue = ''; }
+        });
+        this.saveButton.addEventListener('click', event => UI.action(event.currentTarget, async () => {
+            if (this.saving) return;
+            const values = Object.fromEntries(Object.entries(this.controls).map(([name, control]) => [name, control.value]));
+            await this.save(values);
+        }));
+        this.resetButton.addEventListener('click', event => UI.action(event.currentTarget, async () => {
+            if (this.saving || !confirm('将请求间隔、调试开关和图片云存储恢复为默认设置？')) return;
             await this.save(this.defaults);
-        });
+            for (const name in this.controls) this.controls[name].value = this.settings[name];
+        }));
     }
 
     async save(settings) {
+        this.saving = true;
         try {
             await Settings.save(settings);
-            const serviceProxy = ServiceProxy.getProxy();
-            await serviceProxy.loadSettings();
-            Notification.show('保存成功');
-        } catch (e) {
-            console.log("保存失败", e);
-            Notification.show('保存失败', {type: 'danger'});
-        }
+            this.settings = {...settings}; this.dirty = false;
+            this.status.textContent = '设置已保存';
+            try {
+                await ServiceProxy.getProxy().loadSettings();
+                Notification.show('设置已保存并应用');
+            } catch (_) {
+                this.status.textContent = '设置已保存，后台暂时无法连接。下次启动时会应用。';
+                Notification.show(this.status.textContent, {type: 'warning', duration: 8000});
+            }
+        } finally { this.saving = false; }
     }
 
     static async render() {
@@ -208,13 +227,6 @@ class GeneralPanel {
         return new GeneralPanel('.page-tab-content[name="general"]', settings, defaults);
     }
 }
-
-
-const TEMPLATE_TASK = `\
-<tr>
-  <td width="20%" class="task-name"></td>
-  <td><progress class="progress is-info"></progress></td>
-</tr>`;
 
 
 /**
@@ -231,6 +243,10 @@ export default class ServicePanel {
         this.$loading = $panel.find('.service-ctrl[name="loading"]');
         this.$logs = $panel.find('.logs');
         this.$job = $panel.find('.job');
+        this.progressList = new TaskProgressList(this.$job[0]);
+        this.refreshError = this.panel.querySelector('.service-refresh-error');
+        this.refreshQueued = false;
+        this.refreshPromise = null;
         $panel.find('[name="download-diagnostics"]').click(async event => {
             const button = event.currentTarget;
             button.disabled = true;
@@ -251,24 +267,25 @@ export default class ServicePanel {
                 button.disabled = false;
             }
         });
-        this.$start.click(async event => {
-            console.log("start click")
-            await service.start();
-        });
-        this.$stop.click(async event => {
-            console.log("stop click")
-            await service.stop();
-        });
-        this.init(service);
+        this.$start.click(event => UI.action(event.currentTarget, async () => { await service.start(); await this.onProgress(service); }));
+        this.$stop.click(event => UI.action(event.currentTarget, async () => { await service.stop(); await this.onProgress(service); }));
+        this.panel.querySelector('[name="reconnect"]').addEventListener('click', event => UI.action(event.currentTarget, () => this.onProgress(service)));
+        service.addEventListener('disconnect', () => this.refreshError.classList.remove('is-hidden'));
+        this.ready = this.init(service);
     }
 
     async init(service) {
         service.addEventListener('statechange', event => this.onStateChange(service));
         service.addEventListener('progress', event => this.onProgress(service));
-        let debug = await service.getProperty('debug');
-        if (debug) {
-            service.addEventListener('log', event => this.onLog(event.detail));
-            this.$logs.parent().removeClass('is-hidden');
+        service.addEventListener('log', event => this.onLog(event.detail));
+        const showLogs = enabled => this.$logs.parent().toggleClass('is-hidden', !enabled);
+        chrome.storage.onChanged.addListener((changes, area) => {
+            if (area === 'sync' && changes['service.debug']) showLogs(changes['service.debug'].newValue);
+        });
+        try {
+            showLogs(await service.getProperty('debug'));
+        } catch (error) {
+            // A debug-setting failure must not prevent progress from loading.
         }
         await this.onStateChange(service);
     }
@@ -277,15 +294,14 @@ export default class ServicePanel {
         let {time, levelName, message} = entry;
         let datetime = new Date(time).toISOString();
         $('<P>').text(`[${datetime}] ${levelName}: ${message}`).appendTo(this.$logs);
+        while (this.$logs[0].children.length > 300) this.$logs[0].firstElementChild.remove();
         this.$logs.scrollTop(this.$logs.prop('scrollHeight'));
     }
 
-    async onStateChange(service) {
+    renderStatus(status) {
         let $panel = $(this.panel);
-        $panel.find('.service-ctrl').addClass('is-hidden');
-
-        let status = await service.getProperty('status');
-        let statusName;
+        let statusName = '状态未知';
+        let visibleControl;
         // Service.STATE_STOPPED = 1
         // Service.STATE_START_PENDING = 2
         // Service.STATE_STOP_PENDING = 3
@@ -293,64 +309,83 @@ export default class ServicePanel {
         switch (status) {
             case 1:
                 statusName = '已停止';
-                this.$start.removeClass('is-hidden');
+                visibleControl = this.$start[0];
                 break;
             case 2:
-                this.$stop.removeClass('is-hidden');
+                visibleControl = this.$stop[0];
                 statusName = '等待任务';
                 break;
             case 3:
-                this.$loading.removeClass('is-hidden');
+                visibleControl = this.$loading[0];
                 statusName = '正在停止';
                 break;
             case 4:
-                this.$stop.removeClass('is-hidden');
+                visibleControl = this.$stop[0];
                 statusName = '运行中';
                 break;
         }
-        $panel.find('.service-status')
-            .data('status', status)
-            .text(statusName);
-        await this.onProgress(service);
+        this.panel.querySelectorAll('.service-ctrl').forEach(control => {
+            control.classList.toggle('is-hidden', control !== visibleControl);
+        });
+        const label = this.panel.querySelector('.service-status');
+        if (label.textContent !== statusName) label.textContent = statusName;
+        $panel.find('.service-status').data('status', status);
     }
 
-    async onProgress(service) {
-        this.$job.empty();
-        let currentJob = await service.getProperty('currentJob');
-        if (!currentJob || !currentJob.tasks) {
-            return;
+    onStateChange(service) {
+        return this.onProgress(service);
+    }
+
+    onProgress(service) {
+        this.refreshQueued = true;
+        if (!this.refreshPromise) {
+            this.refreshPromise = this.refresh(service).finally(() => {
+                this.refreshPromise = null;
+                if (this.refreshQueued) this.onProgress(service);
+            });
         }
-        for (let task of currentJob.tasks) {
-            console.log("类名: ", task.taskType || task.constructor.name);
-            let $task = $(TEMPLATE_TASK);
-            let isCurrent = currentJob._currentTask && 
-                            (task.taskType === currentJob._currentTask.taskType || task.name === currentJob._currentTask.name);
-            if (isCurrent) {
-                $task.addClass('is-selected');
+        return this.refreshPromise;
+    }
+
+    async refresh(service) {
+        while (this.refreshQueued) {
+            this.refreshQueued = false;
+            try {
+                const [status, job] = await Promise.all([
+                    service.getProperty('status'), service.getProperty('displayJob'),
+                ]);
+                // Reads are serialized, so an older read cannot overwrite a
+                // newer rendered frame. Render even if another read is queued:
+                // continuous events must not starve the UI of all updates.
+                this.renderStatus(status);
+                this.progressList.render(job);
+                const summary = this.panel?.querySelector('.service-overview');
+                if (summary) {
+                    const completed = job?.completedTaskTypes?.length || 0;
+                    const failed = job?.failedTasks?.length || 0;
+                    summary.textContent = job?.tasks?.length ?
+                        `${job.finishedAt ? '最近任务' : '当前任务'} · ${completed} / ${job.tasks.length} 项已完成${failed ? ` · ${failed} 项失败，请查看下方原因` : ''}` :
+                        '还没有任务，创建一次备份即可在这里查看进度。';
+                }
+                const jobError = this.panel?.querySelector('.service-job-error');
+                if (jobError) { jobError.textContent = job?.error || ''; jobError.classList.toggle('is-hidden', !job?.error); }
+                this.refreshError.classList.add('is-hidden');
+            } catch (error) {
+                if (!this.refreshQueued) this.refreshError.classList.remove('is-hidden');
             }
-            $task.find('.progress').val(task.completion).attr('max', task.total);
-            $task.find('.task-name').text(task.name || (task.taskType === 'Review' ? '评论' : '任务'));
-            $task.appendTo(this.$job);
         }
     }
 
     static async render() {
-        // await new Promise(resolve => {
-        //     chrome.runtime.sendMessage({ action: "ServicePanel" }, resolve);
-        // });
         let service = ServiceProxy.getProxy();
-        // Since we are using a proxy, we need to ask for the state via RPC, or properties
-        // Wait for state to sync
-        service.status = await service.getProperty('status');
-        service.currentJob = await service.getProperty('currentJob');
-        service.debug = await service.getProperty('debug');
-
-        return new ServicePanel('.page-tab-content[name="service"]', service);
+        const panel = new ServicePanel('.page-tab-content[name="service"]', service);
+        await panel.ready;
+        return panel;
     }
 }
 
 
 TabPanel.render();
-GeneralPanel.render();
+GeneralPanel.render().catch(error => Notification.show('设置读取失败：' + error.message, {type: 'danger', duration: 0}));
 AccountPanel.render();
 ServicePanel.render();

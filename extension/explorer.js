@@ -3,15 +3,14 @@ import TabPanel from './ui/tab.js';
 import Paginator from './ui/paginator.js';
 import Storage from './storage.js';
 import ServiceProxy from "./services/ServiceProxy.js";
+import UI from './ui/interactions.js';
+import Content from './ui/safe-content.js';
+import Notification from './ui/notification.js';
+import Exporter, {formatRating} from './exporter.js';
 
 
 const PAGE_SIZE = 50;
 
-function formatRating(subject) {
-    const value = subject?.rating?.value;
-    const rating = value === null || value === undefined || value === '' ? NaN : Number(value);
-    return Number.isFinite(rating) ? rating.toFixed(1) : (subject?.null_rating_reason || '');
-}
 
 
 /**
@@ -51,7 +50,7 @@ class PictureModal extends Modal {
     }
 
     static show(src) {
-        this.instance.modal.querySelector('.image>img').setAttribute('src', src);
+        this.instance.modal.querySelector('.image>img').setAttribute('src', Content.url(src));
         super.show();
     }
 }
@@ -71,69 +70,115 @@ class MinorModal extends Modal {
  * Class Panel
  */
 class Panel {
-    clear() {
-        this.container.innerHTML = '';
-    }
-
-    async load(total) {
-        throw new Error('Not implemented');
-    }
+    clear() { this.container.innerHTML = ''; }
 
     constructor(container, page, pageSize) {
-        this.container = container;
-        this.page = page;
-        this.pageSize = pageSize;
-        let rawId = location.search.replace(/^\?/, '');
-        this.userId = parseInt(rawId, 10);
-        if (isNaN(this.userId)) {
-            console.warn('未指定有效用户 ID');
-        }
+        this.container = container; this.page = page; this.pageSize = pageSize;
+        const rawId = location.search.replace(/^\?/, '');
+        this.userId = /^[1-9]\d*$/.test(rawId) && Number.isSafeInteger(Number(rawId)) ? Number(rawId) : null;
         this.clear();
-        $(container).on(
-            'click',
-            '.image.preview>img',
-            event => PictureModal.show(event.currentTarget.dataset.src)
-        );
+        $(container).off('click.preview').on('click.preview', '.image.preview>img', event => PictureModal.show(event.currentTarget.dataset.src));
     }
 
     get storage() {
-        return new Storage(this.userId);
+        const storage = new Storage(this.userId);
+        this._openedStorage?.push(storage);
+        return storage;
+    }
+
+    async refresh() {
+        const host = this.container;
+        const token = Symbol('load'); host._loadToken = token;
+        host.classList.add('page-loading'); host.setAttribute('aria-busy', 'true');
+        // Each request owns its parameters and detached DOM. Older loads can
+        // finish, but cannot append rows, handlers or pagination to a new view.
+        const staging = document.createElement('div');
+        const view = Object.assign(Object.create(Object.getPrototypeOf(this)), this, {container: staging, _openedStorage: []});
+        if (this.target) view.target = Object.assign(Object.create(Object.getPrototypeOf(this.target)), this.target, {container: staging, _openedStorage: view._openedStorage});
+        try {
+            if (!this.userId) throw new Error('备份账号地址无效，请返回备份首页重新打开。');
+            const total = await view.load();
+            if (host._loadToken !== token) return;
+            this.total = total;
+            if (this.page > Math.max(1, Math.ceil(total / this.pageSize))) {
+                this.page = Math.max(1, Math.ceil(total / this.pageSize)); return this.refresh();
+            }
+            Content.links(staging);
+            host.replaceChildren(...staging.childNodes);
+            if (!total) {
+                host.innerHTML = '<div class="empty-state"><div class="empty-icon">▤</div><h2>这里还没有存档</h2><p>这个分类暂时没有已保存的内容。可以创建备份，或切换其他分类。</p><a class="button is-light" href="backup.html#new-task">新建备份</a></div>';
+            } else {
+                const summary = document.createElement('div'); summary.className = 'archive-summary';
+                summary.innerHTML = '<strong></strong><span class="filter-count"></span><label>每页 <select aria-label="每页条数"><option>25</option><option>50</option><option>100</option></select> 条</label>';
+                summary.querySelector('strong').textContent = `共 ${total.toLocaleString()} 条 · 第 ${this.page} / ${Math.ceil(total / this.pageSize)} 页`;
+                const select = summary.querySelector('select'); select.value = this.pageSize;
+                select.onchange = () => {
+                    this.pageSize = Number(select.value); if (this.target) this.target.pageSize = this.pageSize;
+                    this.page = 1; this.refresh();
+                };
+                host.prepend(summary); this.paging();
+            }
+            this.filter();
+        } catch (error) {
+            if (host._loadToken !== token) return;
+            host.replaceChildren();
+            const message = document.createElement('div'); message.className = 'state-message is-danger'; message.setAttribute('role', 'alert');
+            const text = document.createElement('p'); text.textContent = '读取失败：' + (error.message || error);
+            const retry = document.createElement('button'); retry.className = 'button'; retry.textContent = '重试'; retry.onclick = () => this.refresh();
+            message.append(text, retry); host.append(message);
+        } finally {
+            for (const storage of view._openedStorage) { storage._local?.close(); storage._global?.close(); }
+            if (host._loadToken === token) { host.classList.remove('page-loading'); host.removeAttribute('aria-busy'); }
+        }
+    }
+
+    filter() {
+        const query = this.container.closest('.modal') ? '' : (document.querySelector('#archive-search')?.value || '').trim().toLocaleLowerCase();
+        const rows = [...this.container.children].flatMap(node => node.matches('article, .media') ? [node] : node.matches('.columns') ? [...node.children] : []);
+        let visible = 0;
+        rows.forEach(row => { row.hidden = !row.textContent.toLocaleLowerCase().includes(query); if (!row.hidden) visible++; });
+        const count = this.container.querySelector('.filter-count');
+        if (count) count.textContent = query ? `本页匹配 ${visible} / ${rows.length} 条` : '';
+        this.container.querySelector('.filter-empty')?.remove();
+        if (query && rows.length && !visible) {
+            const empty = document.createElement('p'); empty.className = 'state-message filter-empty';
+            empty.textContent = '本页没有匹配内容。清空筛选、翻页，或导出 Excel 检索全部数据。'; this.container.append(empty);
+        }
     }
 
     paging() {
-        let page = this.page;
-        let total = this.total;
-        let pageSize = this.pageSize;
-        let panel = this;
+        const paginator = new Paginator(this.page, Math.ceil(this.total / this.pageSize));
+        paginator.addEventListener('change', () => { this.page = paginator.currentPage; this.refresh(); });
+        paginator.appendTo(this.container);
+    }
 
-        let paginator = new Paginator(page, Math.ceil(total / pageSize));
-        paginator.addEventListener('change', async event => {
-            panel.clear();
-            paginator.currentPage = panel.page = event.target.currentPage;
-            await panel.load(total);
-            paginator.load();
-            paginator.appendTo(panel.container);
-        })
-        paginator.appendTo(panel.container);
+    async article(table, id) {
+        return UI.action(null, async () => {
+            const storage = this.storage;
+            const modal = MinorModal.instance.modal;
+            const container = modal.querySelector('.box');
+            const token = Symbol('article'); container._loadToken = token;
+            container.textContent = '正在读取正文…'; MinorModal.show();
+            try {
+                const row = await storage.local.table(table).get({id});
+                const article = row?.[table];
+                if (!article) throw new Error('这条记录已不存在，请刷新档案。');
+                if (container._loadToken !== token || !modal.classList.contains('is-active')) return;
+                const body = document.createElement('article'); body.className = 'content';
+                const title = document.createElement('h2'); title.textContent = article.title || '正文';
+                body.append(title, Content.html(article.fulltext));
+                container.replaceChildren(body);
+            } finally { storage._local?.close(); }
+        });
     }
 
     static async render(tab, page = 1, pageSize = PAGE_SIZE) {
-        const PANEL_CLASSES = {
-            status: Status,
-            interest: Interest,
-            review: Review,
-            annotation: Annotation,
-            note: Note,
-            photo: PhotoAlbum,
-            follow: Follow,
-            doumail: DoumailContact,
-            doulist: Doulist,
-            board: Board,
-        };
-        let name = tab.getAttribute('name');
-        let panel = new (PANEL_CLASSES[name])(tab, page, pageSize);
-        panel.total = await panel.load();
-        panel.paging();
+        const classes = {status: Status, interest: Interest, review: Review, annotation: Annotation, note: Note,
+            photo: PhotoAlbum, follow: Follow, doumail: DoumailContact, doulist: Doulist, board: Board};
+        const Class = classes[tab?.getAttribute('name')];
+        if (!Class) return;
+        const panel = new Class(tab, page, pageSize); tab._panel = panel;
+        await panel.refresh(); return panel;
     }
 }
 
@@ -152,6 +197,10 @@ class SegmentsPanel extends Panel {
         super(container, page, pageSize);
         this.segments = segments;
         let $segmentLinks = $(this.segments).find('ul>li a');
+        $segmentLinks.attr('tabindex', '0').attr('role', 'button');
+        $segmentLinks.off('keydown').on('keydown', event => {
+            if (['Enter', ' '].includes(event.key)) { event.preventDefault(); event.currentTarget.click(); }
+        });
         $segmentLinks.parent().removeClass('is-active');
         this.segments.querySelector('ul>li').classList.add('is-active');
         $segmentLinks.off('click');
@@ -161,9 +210,7 @@ class SegmentsPanel extends Panel {
             $target.parent().addClass('is-active');
             this.onToggle($target);
             this.page = 1;
-            this.clear();
-            this.total = await this.load();
-            this.paging();
+            await this.refresh();
         });
     }
 }
@@ -274,7 +321,7 @@ const TEMPLATE_RESHARED_STATUS = `\
 class Status extends Panel {
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let collection = await storage.local.status
             .orderBy('id').reverse()
             .offset(this.pageSize * (this.page - 1)).limit(this.pageSize)
@@ -296,7 +343,7 @@ class Status extends Panel {
                 $statusText.append($('<span>').text(status.text))
                     .append('<span class="icon"><i class="fas fa-retweet"></i></span>');
                 if (parentStatus.deleted) {
-                    $statusText.append(parentStatus.msg);
+                    $statusText.append($('<span>').text(parentStatus.msg));
                 } else {
                     $statusText.append($(`<a>`).text(parentStatus.author.name).attr('href', parentStatus.author.url))
                         .append(': ')
@@ -309,13 +356,7 @@ class Status extends Panel {
             if (status.images && status.images.length > 0) {
                 let $images = $status.find('.images').removeClass('is-hidden');
                 status.images.forEach(image => {
-                    $images.append(`\
-<div class="column is-one-third">
-  <figure class="image preview is-128x128">
-    <img src="${image.normal.url}" data-src="${image.large.url}">
-  </figure>
-</div>`
-                    );
+                    $images.append(Content.image(image.normal?.url, image.large?.url));
                 });
             }
             $status.find('.likes').text(status.like_count);
@@ -348,7 +389,7 @@ class Status extends Panel {
                 let resharedStatus = status.reshared_status;
                 let $container = $status.find('.reshared-status').removeClass('is-hidden');
                 if (resharedStatus.deleted || resharedStatus.hidden) {
-                    $resharedStatus = $(`<article class="box">${resharedStatus.msg}</article>`);
+                    $resharedStatus = $('<article class="box">').text(resharedStatus.msg);
                 } else {
                     $resharedStatus = $(TEMPLATE_RESHARED_STATUS);
                     $resharedStatus.find('.avatar>img').attr('src', resharedStatus.author.avatar);
@@ -360,13 +401,7 @@ class Status extends Panel {
                     if (resharedStatus.images && resharedStatus.images.length > 0) {
                         let $images = $resharedStatus.find('.images').removeClass('is-hidden');
                         resharedStatus.images.forEach(image => {
-                            $images.append(`\
-<div class="column is-one-third">
-    <figure class="image preview is-128x128">
-    <img src="${image.normal.url}" data-src="${image.large.url}">
-    </figure>
-</div>`
-                            );
+                            $images.append(Content.image(image.normal?.url, image.large?.url));
                         });
                     }
                     if (resharedStatus.card) {
@@ -442,7 +477,7 @@ class Interest extends SegmentsPanel {
 
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let versionInfo = await storage.local.table('version').get({
             table: 'interest',
         });
@@ -527,19 +562,7 @@ const TEMPLATE_REVIEW = `\
  * Class Review
  */
 class Review extends SegmentsPanel {
-    async showReview(reviewId, version) {
-        let storage = this.storage;
-        storage.local.open();
-        let { review } = await storage.local.review.get({ id: reviewId });
-        storage.local.close();
-        let container = MinorModal.instance.modal.querySelector('.box');
-        container.innerHTML = '';
-        let $article = $(TEMPLATE_ARTICLE);
-        $article.find('.title').text(review.title);
-        $article.find('.content').html(review.fulltext);
-        $article.appendTo(container);
-        MinorModal.show();
-    }
+    async showReview(reviewId) { return this.article('review', reviewId); }
 
     onToggle($target) {
         this.type = $target.data('type');
@@ -552,7 +575,7 @@ class Review extends SegmentsPanel {
 
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let versionInfo = await storage.local.table('version').get({
             table: 'review',
         });
@@ -645,23 +668,11 @@ const TEMPLATE_ARTICLE = `\
  * Class Note
  */
 class Note extends Panel {
-    async showNote(noteId, version) {
-        let storage = this.storage;
-        storage.local.open();
-        let { note } = await storage.local.note.get({ id: noteId });
-        storage.local.close();
-        let container = MinorModal.instance.modal.querySelector('.box');
-        container.innerHTML = '';
-        let $article = $(TEMPLATE_ARTICLE);
-        $article.find('.title').text(note.title);
-        $article.find('.content').html(note.fulltext);
-        $article.appendTo(container);
-        MinorModal.show();
-    }
+    async showNote(noteId) { return this.article('note', noteId); }
 
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let versionInfo = await storage.local.table('version').get({
             table: 'note',
         });
@@ -757,23 +768,11 @@ const TEMPLATE_ANNOTATION = `\
  * Class Annotation
  */
 class Annotation extends Panel {
-    async showAnnotation(annotationId, version) {
-        let storage = this.storage;
-        storage.local.open();
-        let { annotation } = await storage.local.annotation.get({ id: annotationId });
-        storage.local.close();
-        let container = MinorModal.instance.modal.querySelector('.box');
-        container.innerHTML = '';
-        let $article = $(TEMPLATE_ARTICLE);
-        $article.find('.title').text(annotation.title);
-        $article.find('.content').html(annotation.fulltext);
-        $article.appendTo(container);
-        MinorModal.show();
-    }
+    async showAnnotation(annotationId) { return this.article('annotation', annotationId); }
 
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let versionInfo = await storage.local.table('version').get({
             table: 'annotation',
         });
@@ -864,13 +863,12 @@ class PhotoAlbum extends Panel {
         let panel = new Photo(container, 1, 40);
         MinorModal.show();
         panel.album = albumId;
-        panel.total = await panel.load();
-        panel.paging();
+        await panel.refresh();
     }
 
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let versionInfo = await storage.local.table('version').get({
             table: 'photo',
         });
@@ -916,7 +914,7 @@ class Photo extends Panel {
     async load(total) {
         let albumId = this.album;
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let versionInfo = await storage.local.table('version').get({
             table: 'photo',
         });
@@ -985,7 +983,7 @@ const TEMPLATE_USER_INFO = `\
 class Following extends Panel {
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let versionInfo = await storage.local.table('version').get({
             table: 'following',
         });
@@ -1027,7 +1025,7 @@ class Following extends Panel {
 class Follower extends Panel {
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let versionInfo = await storage.local.table('version').get({
             table: 'follower',
         });
@@ -1068,7 +1066,7 @@ class Follower extends Panel {
 class Blacklist extends Panel {
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let versionInfo = await storage.local.table('version').get({
             table: 'blacklist',
         });
@@ -1168,13 +1166,12 @@ class DoumailContact extends Panel {
         let panel = new Doumail(container, 1, PAGE_SIZE);
         MinorModal.show();
         panel.contact = contactId;
-        panel.total = await panel.load();
-        panel.paging();
+        await panel.refresh();
     }
 
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let collection = await storage.local.doumailContact
             .orderBy('rank').reverse()
             .offset(this.pageSize * (this.page - 1)).limit(this.pageSize)
@@ -1225,7 +1222,7 @@ class Doumail extends Panel {
     async load(total) {
         let contactId = this.contact;
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let collection = await storage.local.doumail
             .where({contact: contactId})
             .offset(this.pageSize * (this.page - 1)).limit(this.pageSize)
@@ -1241,7 +1238,7 @@ class Doumail extends Panel {
             $mail.find('.avatar img').attr('src', mail.sender.avatar);
             $mail.find('.datetime').text(mail.datetime);
             $mail.find('.sender').text(mail.sender.name);
-            $mail.find('.content').html(mail.content);
+            $mail.find('.content')[0].replaceChildren(Content.html(mail.content));
             $mail.find('.sender-url').attr('href', mail.sender.url);
             $mail.appendTo(this.container);
         }
@@ -1295,13 +1292,12 @@ class Doulist extends SegmentsPanel {
         let panel = new DoulistItem(container, 1, PAGE_SIZE);
         MinorModal.show();
         panel.doulist = doulistId;
-        panel.total = await panel.load();
-        panel.paging();
+        await panel.refresh();
     }
 
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let collection = await storage.local.doulist
             .where({ type: this.type })
             .offset(this.pageSize * (this.page - 1)).limit(this.pageSize)
@@ -1365,7 +1361,7 @@ class DoulistItem extends Panel {
     async load(total) {
         let doulistId = this.doulist;
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let collection = await storage.local.doulistItem
             .where({doulist: doulistId})
             .offset(this.pageSize * (this.page - 1)).limit(this.pageSize)
@@ -1385,17 +1381,11 @@ class DoulistItem extends Panel {
             $item.find('.abstract').text(item.abstract);
             $item.find('.source').text(item.source);
             item.comment && $item.find('.comment').text(item.comment).removeClass('is-hidden');
-            if (item.extra.status) {
+            if (item.extra?.status) {
                 $item.find('.status-text').text(item.extra.status.text);
                 let $images = $item.find('.status-images').removeClass('is-hidden');
                 for (let src of item.extra.status.images) {
-                    $images.append(`\
-<div class="column is-one-quarter">
-  <figure class="image preview is-128x128">
-    <img src="${src}" data-src="${src}" style="overflow: hidden;">
-  </figure>
-</div>`
-                    )
+                    $images.append(Content.image(src));
                 }
             }
             $item.appendTo(this.container);
@@ -1432,7 +1422,7 @@ const TEMPLATE_BOARD = `\
 class Board extends Panel {
     async load(total) {
         let storage = this.storage;
-        storage.local.open();
+        await storage.local.open();
         let collection = await storage.local.board
             .reverse()
             .offset(this.pageSize * (this.page - 1)).limit(this.pageSize)
@@ -1468,40 +1458,31 @@ class ExportModal {
         modal.element.querySelectorAll('.cancel').forEach(item => {
             item.addEventListener('click', () => modal.close());
         });
-        $('.button[name="export"]').click(() => modal.open());
+        document.querySelector('.navbar [name="export"]').addEventListener('click', () => modal.open());
+        UI.selection(modal.element, 'input[name="item"]');
         modal.element.querySelector('.select-all').addEventListener('change', event => {
             modal.element.querySelectorAll('input[name="item"]').forEach(item => {
                 item.checked = event.target.checked;
             });
         });
-        modal.element.querySelector('.button[name="export"]').addEventListener('click', async () => {
-            modal.close();
+        modal.element.querySelector('.button[name="export"]').addEventListener('click', event => UI.action(event.currentTarget, async () => {
             let checkedItems = modal.element.querySelectorAll('input[name="item"]:checked');
-            if (!checkedItems.length) return false;
+            if (!checkedItems.length) throw new Error('请至少选择一项要导出的内容。');
             let items = new Array(checkedItems.length);
             for (let i = 0; i < checkedItems.length; i ++) {
                 items[i] = checkedItems[i].value;
             }
-            let $loading = $(`\
-<div class="modal is-active">
-  <div class="modal-background"></div>
-  <div class="modal-content" style="width: 6rem;">
-    <a class="button is-loading is-fullwidth is-large">Loading</a>
-  </div>
-</div>`
-            );
-            $loading.appendTo(document.body);
             try {
+                await Exporter.ready();
                 let exporter = new Exporter();
                 await exporter.export(items);
                 exporter.save();
+                modal.close();
+                Notification.show('Excel 已生成，请查看浏览器下载记录。');
             } catch (err) {
-                console.error('导出 Excel 失败:', err);
-                alert('导出失败: ' + err.message);
-            } finally {
-                $loading.remove();
+                throw new Error('导出失败：' + err.message);
             }
-        });
+        }));
         return modal;
     }
 
@@ -1518,424 +1499,6 @@ class ExportModal {
 /**
  * Class Exporter
  */
-class Exporter {
-    constructor() {
-        this.userId = parseInt(location.search.substr(1));
-        this.workbook = XLSX.utils.book_new();
-    }
-
-    async exportInterest(storage) {
-        let sheetNames = {
-            'movie/done': '看过',
-            'movie/doing': '在看',
-            'movie/mark': '想看',
-            'music/done': '听过',
-            'music/doing': '在听',
-            'music/mark': '想听',
-            'book/done': '读过',
-            'book/doing': '在读',
-            'book/mark': '想读',
-            'game/done': '玩过',
-            'game/doing': '在玩',
-            'game/mark': '想玩',
-            'drama/done': '看过的舞台剧',
-            'drama/mark': '想看的舞台剧',
-        };
-        for (let type of ['movie', 'music', 'book', 'game', 'drama']) {
-            for (let status of ['done', 'doing', 'mark']) {
-                let sheetName = sheetNames[`${type}/${status}`];
-                if (!sheetName) continue;
-
-                let collection = storage.local.interest
-                    .where({ type: type, status: status })
-                    .reverse();
-                let data = [['标题', '简介', '豆瓣评分', '链接', '创建时间', '我的评分', '标签', '评论', '可见性']];
-                await collection.each(row => {
-                    if (!row || !row.interest) return;
-                    let {
-                        subject,
-                        tags,
-                        rating,
-                        comment,
-                        create_time,
-                        is_private
-                    } = row.interest;
-                    let ratingStr = formatRating(subject);
-                    let tagsStr = Array.isArray(tags) ? tags.join(',') : (tags ? String(tags) : '');
-                    data.push([
-                        subject?.title || '',
-                        subject?.card_subtitle || '',
-                        ratingStr,
-                        subject?.url || '',
-                        create_time || '',
-                        rating ? rating.value : '',
-                        tagsStr,
-                        comment || '',
-                        is_private ? "private" : "public"
-                    ]);
-                });
-                let worksheet = XLSX.utils.aoa_to_sheet(data);
-                XLSX.utils.book_append_sheet(this.workbook, worksheet, sheetName);
-            }
-        }
-    }
-
-    async exportReview(storage) {
-        let sheetNames = {'movie': '影评', 'music': '乐评', 'book': '书评', 'drama': '剧评', 'game': '游戏评论&攻略'};
-        for (let type in sheetNames) {
-            let collection = storage.local.review
-                .where({ type: type })
-                .reverse();
-            let data = [['标题', '评论对象', '链接', '创建时间', '我的评分', '类型', '内容']];
-            await collection.each(row => {
-                if (!row || !row.review) return;
-                let {
-                    subject,
-                    url,
-                    rating,
-                    fulltext,
-                    title,
-                    create_time,
-                    type_name
-                } = row.review;
-                data.push([
-                    title || '',
-                    subject?.title ? `《${subject.title}》` : '',
-                    url || '',
-                    create_time || '',
-                    rating ? rating.value : '',
-                    type_name || '',
-                    fulltext || '',
-                ]);
-            });
-            let worksheet = XLSX.utils.aoa_to_sheet(data);
-            XLSX.utils.book_append_sheet(this.workbook, worksheet, sheetNames[type]);
-        }
-    }
-
-    async exportAnnotation(storage) {
-        let collection = storage.local.annotation
-            .reverse();
-        let data = [['书名', '章节', '页码', '链接', '创建时间', '我的评分', '内容']];
-        await collection.each(row => {
-            if (!row || !row.annotation) return;
-            let {
-                subject,
-                chapter,
-                page,
-                url,
-                rating,
-                fulltext,
-                create_time
-            } = row.annotation;
-            data.push([
-                subject ? subject.title : '',
-                chapter || '',
-                page || '',
-                url || '',
-                create_time || '',
-                rating ? rating.value : '',
-                fulltext || '',
-            ]);
-        });
-        let worksheet = XLSX.utils.aoa_to_sheet(data);
-        XLSX.utils.book_append_sheet(this.workbook, worksheet, '笔记');
-    }
-
-    async exportStatus(storage) {
-        let formatStatus = (status) => {
-            if (!status) return '';
-            if (status.deleted || status.hidden) {
-                return status.msg || '已删除或隐藏';
-            }
-            let authorName = status.author?.name || '未知作者';
-            let authorUid = status.author?.uid || '';
-            let text = `${authorName}(@${authorUid})`;
-            if (status.activity) {
-                text += ` ${status.activity}`;
-            }
-            text += `: ${status.text || ''}`;
-            if (status.card) {
-                text += `[推荐]:《${status.card.title || ''}》(${status.card.url || ''})`;
-            }
-            if (status.images && status.images.length > 0) {
-                let images = [];
-                status.images.forEach(image => {
-                    if (image?.large?.url) images.push(image.large.url);
-                });
-                text += ` ${images.join(', ')}`;
-            }
-            if (status.parent_status) {
-                text += `//${formatStatus(status.parent_status)}...`;
-            }
-            if (status.reshared_status) {
-                text += `//${formatStatus(status.reshared_status)}`;
-            }
-            return text;
-        };
-
-        let collection = await storage.local.status
-            .orderBy('id')
-            .reverse();
-        let data = [['创建时间', '链接', '内容', '话题']];
-        await collection.each(row => {
-            if (!row || !row.status) return;
-            let {
-                sharing_url,
-                create_time,
-                topic,
-            } = row.status;
-            data.push([
-                create_time || '',
-                sharing_url || '',
-                formatStatus(row.status),
-                topic ? [topic.title, topic.url].toString() : '',
-            ]);
-        });
-        let worksheet = XLSX.utils.aoa_to_sheet(data);
-        XLSX.utils.book_append_sheet(this.workbook, worksheet, '广播');
-    }
-
-    async exportFollowing(storage) {
-        let data = [['用户名', '用户ID', '链接', '所在地', '备注']];
-
-        let versionInfo = await storage.local.table('version').get({
-            table: 'following',
-        });
-
-        if (versionInfo) {
-            let collection = storage.local.following.where({ version: versionInfo.version });
-            await collection.each(row => {
-                let {
-                    name,
-                    uid,
-                    url,
-                    loc,
-                    remark
-                } = row.user;
-                data.push([
-                    name,
-                    uid,
-                    url,
-                    loc ? loc.name : '',
-                    remark,
-                ]);
-            });    
-        }
-
-        let worksheet = XLSX.utils.aoa_to_sheet(data);
-        XLSX.utils.book_append_sheet(this.workbook, worksheet, '我关注的');
-    }
-
-    async exportFollower(storage) {
-        let data = [['用户名', '用户ID', '链接', '所在地']];
-
-        let versionInfo = await storage.local.table('version').get({
-            table: 'follower',
-        });
-
-        if (versionInfo) {
-            let collection = storage.local.follower.where({ version: versionInfo.version });
-            await collection.each(row => {
-                let {
-                    name,
-                    uid,
-                    url,
-                    loc
-                } = row.user;
-                data.push([
-                    name,
-                    uid,
-                    url,
-                    loc ? loc.name : '',
-                ]);
-            });    
-        }
-        let worksheet = XLSX.utils.aoa_to_sheet(data);
-        XLSX.utils.book_append_sheet(this.workbook, worksheet, '关注我的');
-    }
-
-    async exportBlacklist(storage) {
-        let data = [['用户名', '用户ID', '链接']];
-
-        let versionInfo = await storage.local.table('version').get({
-            table: 'blacklist',
-        });
-
-        if (versionInfo) {
-            let collection = storage.local.blacklist.where({ version: versionInfo.version });
-            await collection.each(row => {
-                let {
-                    name,
-                    uid,
-                    url
-                } = row.user;
-                data.push([
-                    name,
-                    uid,
-                    url
-                ]);
-            });
-        }
-        let worksheet = XLSX.utils.aoa_to_sheet(data);
-        XLSX.utils.book_append_sheet(this.workbook, worksheet, '黑名单');
-    }
-
-    async exportNote(storage) {
-        let collection = storage.local.note.reverse();
-        let data = [['标题', '链接', '创建时间', '修改时间', '内容']];
-        await collection.each(row => {
-            let {
-                title,
-                url,
-                fulltext,
-                create_time,
-                update_time
-            } = row.note;
-            data.push([
-                title,
-                url,
-                create_time,
-                update_time,
-                fulltext,
-            ]);
-        });
-        let worksheet = XLSX.utils.aoa_to_sheet(data);
-        XLSX.utils.book_append_sheet(this.workbook, worksheet, '日记');
-    }
-
-    async exportPhoto(storage) {
-        let data = [['相册名称', '相册链接', '相册描述', '相册创建时间', '照片描述', '照片链接']];
-        let albums = await storage.local.album.toArray();
-        for (let {id, album} of albums) {
-            if (!album) continue;
-            data.push([album.title || '', album.url || '', album.description || '', album.create_time || '']);
-            let photos = storage.local.photo.where({album: id});
-            await photos.each(photo => {
-                let {url, description} = photo?.photo || {};
-                data.push([null, null, null, null, description || '', url || '']);
-            });
-        }
-        let worksheet = XLSX.utils.aoa_to_sheet(data);
-        XLSX.utils.book_append_sheet(this.workbook, worksheet, '相册');
-    }
-
-    async exportDoumail(storage) {
-        let data = [['用户', '链接', '发件人', '发送时间', '正文']];
-        let contacts = await storage.local.doumailContact
-            .orderBy('rank')
-            .reverse()
-            .toArray();
-        for (let {id, contact, url} of contacts) {
-            data.push([
-                contact?.name || '未知用户',
-                url || '',
-            ]);
-            let doumails = storage.local.doumail.where({contact: id});
-            await doumails.each(doumail => {
-                let {content, sender, datetime} = doumail || {};
-                data.push([null, null, sender?.name || '', datetime || '', content || '']);
-            });
-        }
-        let worksheet = XLSX.utils.aoa_to_sheet(data);
-        XLSX.utils.book_append_sheet(this.workbook, worksheet, '豆邮');
-    }
-
-    async exportDoulist(storage) {
-        let sheetNames = {'owned': '创建的豆列', 'following': '收藏的豆列'};
-        for (let type in sheetNames) {
-            let data = [['豆列名称', '豆列链接', '豆列简介', '豆列创建时间', '豆列更新时间', '内容名称', '内容链接', '来源', '评语']];
-            let doulists = await storage.local.doulist.where({type: type}).toArray();
-            for (let {id, doulist} of doulists) {
-                if (!doulist) continue;
-                data.push([
-                    doulist.title || '',
-                    doulist.url || '',
-                    doulist.desc || '',
-                    doulist.create_time || '',
-                    doulist.update_time || '',
-                ]);
-                let items = storage.local.doulistItem.where({doulist: id});
-                await items.each(itemRow => {
-                    let item = itemRow?.item;
-                    if (item) {
-                        data.push([null, null, null, null, null, item.title || '', item.url || '', item.source || '', item.comment || '']);
-                    }
-                });
-            }
-            let worksheet = XLSX.utils.aoa_to_sheet(data);
-            XLSX.utils.book_append_sheet(this.workbook, worksheet, sheetNames[type]);
-        }
-    }
-
-    async exportBoard(storage) {
-        let data = [['留言用户', '用户主页', '留言时间', '消息']];
-        let messages = await storage.local.board
-            .reverse()
-            .toArray();
-        for (let {id, sender, sendTime, message} of messages) {
-            data.push([
-                sender?.name || '',
-                sender?.url || '',
-                sendTime || '',
-                message || ''
-            ]);
-        }
-        let worksheet = XLSX.utils.aoa_to_sheet(data);
-        XLSX.utils.book_append_sheet(this.workbook, worksheet, '留言板');
-    }
-
-    async export(items) {
-        let storage = new Storage(this.userId);
-        storage.local.open();
-        for (let item of items) {
-            switch (item) {
-                case 'Interest':
-                    await this.exportInterest(storage);
-                    break;
-                case 'Review':
-                    await this.exportReview(storage);
-                    break;
-                case 'Annotation':
-                    await this.exportAnnotation(storage);
-                    break;
-                case 'Status':
-                    await this.exportStatus(storage);
-                    break;
-                case 'Following':
-                    await this.exportFollowing(storage);
-                    break;
-                case 'Follower':
-                    await this.exportFollower(storage);
-                    break;
-                case 'Blacklist':
-                    await this.exportBlacklist(storage);
-                    break;
-                case 'Note':
-                    await this.exportNote(storage);
-                    break;
-                case 'Photo':
-                    await this.exportPhoto(storage);
-                    break;
-                case 'Doumail':
-                    await this.exportDoumail(storage);
-                    break;
-                case 'Doulist':
-                    await this.exportDoulist(storage);
-                    break;
-                case 'Board':
-                    await this.exportBoard(storage);
-                    break;
-            }
-        }
-        storage.local.close();
-    }
-
-    save() {
-        let filename = `豆伴(${this.userId}).xlsx`;
-        XLSX.writeFile(this.workbook, filename);
-    }
-}
 
 
 /**
@@ -1952,7 +1515,8 @@ class MigrateModal {
         modal.element.querySelectorAll('.cancel').forEach(item => {
             item.addEventListener('click', () => modal.close());
         });
-        $('.button[name="migrate"]').click(() => modal.open());
+        document.querySelector('.navbar [name="migrate"]').addEventListener('click', () => modal.open());
+        UI.selection(modal.element, 'input[name="task"]');
 
         modal.element.querySelector('.select-all').addEventListener('change', event => {
             modal.element.querySelectorAll('input[name="task"]').forEach(item => {
@@ -1962,7 +1526,7 @@ class MigrateModal {
             });
         });
 
-        modal.element.querySelector('.button[name="migrate"]').addEventListener('click', async () => {
+        modal.element.querySelector('.button[name="migrate"]').addEventListener('click', event => UI.action(event.currentTarget, async () => {
             let localUserId = parseInt(location.search.substr(1));
             let job;
             try {
@@ -1973,9 +1537,9 @@ class MigrateModal {
             }
             if (job) {
                 modal.close();
-                window.open(chrome.runtime.getURL('options.html#service'));
+                location.href = chrome.runtime.getURL('options.html#service');
             }
-        });
+        }));
 
         return modal;
     }
@@ -2014,14 +1578,28 @@ class MigrateModal {
 let tab = TabPanel.render();
 tab.addEventListener('toggle', async event => await Panel.render(event.target.activeTab));
 Panel.render(tab.activeTab);
+UI.dialogs();
+document.querySelector('#archive-search').addEventListener('input', () => tab.activeTab?._panel?.filter());
+loadArchiveIdentity();
 ExportModal.init();
 MigrateModal.init();
 
-document.querySelector('.button[name="upload"]').addEventListener('click', async () => {
-    let localUserId = parseInt(location.search.replace(/^\?/, ''));
+document.querySelector('.button[name="upload"]').addEventListener('click', event => UI.action(event.currentTarget, async () => {
+    const localUserId = Number(location.search.slice(1));
     const service = ServiceProxy.getProxy();
-    let job = await service.createJob(localUserId, null, [{name: 'files'}], true);
-    if (job) {
-        window.open(chrome.runtime.getURL('options.html#service'));
-    }
-});
+    const job = await service.createJob(localUserId, null, [{name: 'files'}], true);
+    if (job) location.href = chrome.runtime.getURL('options.html#service');
+}));
+
+async function loadArchiveIdentity() {
+    const storage = new Storage();
+    try {
+        const userId = Number(location.search.slice(1));
+        const account = await storage.global.account.get({userId});
+        if (!account) throw new Error('找不到这个账号的备份，请返回首页确认。');
+        document.querySelector('#archive-title').textContent = `${account.username || account.userId} 的档案`;
+        document.querySelector('#archive-description').textContent = `@${account.userSymbol || account.userId} · ${account.updated ? '最近更新于 ' + new Date(account.updated).toLocaleString('zh-CN') : '尚未完成首次备份'} · 本地存档`;
+    } catch (error) {
+        document.querySelector('#archive-description').textContent = error.message;
+    } finally { storage.global.close(); }
+}

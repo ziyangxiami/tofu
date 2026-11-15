@@ -2,6 +2,9 @@
 import Storage from './storage.js';
 import FileSaver from './vendor/FileSaver.js';
 import ServiceProxy from './services/ServiceProxy.js';
+import UI from './ui/interactions.js';
+import Content from './ui/safe-content.js';
+import Notification from './ui/notification.js';
 
 const ACCOUNT_TEMPLATE = `\
 <article class="media box account">
@@ -20,10 +23,10 @@ const ACCOUNT_TEMPLATE = `\
         <br>
       </p>
     </div>
-    <div class="columns user-data"></div>
+    <a class="button is-light account-open">翻阅档案 →</a>
   </div>
   <div class="media-right">
-    <button class="delete" title="删除备份数据"></button>
+    <button class="delete" title="删除备份数据" aria-label="删除此账号的本地备份"></button>
   </div>
 </article>`;
 
@@ -34,55 +37,80 @@ class AccountList {
     }
 
     async load() {
-        let storage = new Storage();
-        await storage.global.open();
-        let accounts = await storage.global.account.toArray();
-        storage.global.close();
+        const storage = new Storage();
+        let accounts;
+        try {
+            await storage.global.open();
+            accounts = await storage.global.account.toArray();
+        } finally { storage.global.close(); }
+        this.element.replaceChildren();
+        accounts.sort((a, b) => (b.updated || 0) - (a.updated || 0));
+        document.querySelector('#account-count').textContent = accounts.length;
+        const updated = accounts.find(account => account.updated > 0)?.updated;
+        document.querySelector('#latest-backup').textContent = updated ? new Date(updated).toLocaleDateString('zh-CN') : '尚无更新';
+        if (!accounts.length) {
+            this.element.innerHTML = '<div class="empty-state"><div class="empty-icon">▤</div><h2>第一份档案，从这里开始</h2><p>登录豆瓣后，新建一次备份。已导出的数据库也可以通过右上角恢复。</p><button class="button is-link empty-create">＋ 创建第一份备份</button></div>';
+            this.element.querySelector('button').onclick = () => TaskModal.instance.open();
+        }
+        for (const account of accounts) {
+            const $account = $(ACCOUNT_TEMPLATE);
+            $account.find('.image.avatar>img').attr('src', Content.url(account.userInfo?.avatar) || 'images/icon-48x48.png');
+            $account.find('.username').text(account.username || account.userInfo?.name || '未命名账号');
+            $account.find('.user-symbol').text('@' + (account.userSymbol || account.userId));
+            $account.find('.reg-time').text(account.userInfo?.reg_time || '未知时间');
+            $account.find('.backup-time').text(account.updated ?
+                new Date(account.updated).toLocaleString() : '尚未完成备份');
+            $account.data('user-id', account.userId);
+            $account.find('.account-open').attr('href', 'explorer.html?' + account.userId);
+            $account.appendTo(this.element);
+        }
+        this.filter();
+    }
 
-        if (accounts.length > 0) {
-            let $list = $(this.element);
-            accounts.forEach(account => {
-                let $account = $(ACCOUNT_TEMPLATE);
-                $account.find('.image.avatar>img').attr('src', account.userInfo.avatar);
-                $account.find('.username').text(account.username);
-                $account.find('.user-symbol').text('@' + account.userSymbol);
-                $account.find('.reg-time').text(account.userInfo.reg_time);
-                $account.find('.backup-time').text(account.updated ?
-                    new Date(account.updated).toLocaleString() : '尚未完成备份');
-                $account.data('user-id', account.userId);
-                $account.appendTo($list);
-            });
+    filter() {
+        const query = document.querySelector('#account-search').value.trim().toLocaleLowerCase();
+        let visible = 0;
+        this.element.querySelectorAll('.account').forEach(account => {
+            account.hidden = !account.textContent.toLocaleLowerCase().includes(query);
+            if (!account.hidden) visible++;
+        });
+        this.element.querySelector('.search-empty')?.remove();
+        if (query && !visible) {
+            const empty = document.createElement('p'); empty.className = 'state-message search-empty';
+            empty.textContent = '没有找到匹配的账号，试试昵称或豆瓣 ID。'; this.element.append(empty);
         }
     }
 
     async remove(userId) {
         let storage = new Storage();
         try {
-            return await storage.drop(userId);
-        } catch (e) {
-            return false;
-        }
+            return await withDatabaseMaintenance(() => storage.drop(userId));
+        } finally { storage.global.close(); }
     }
 
     static async render() {
-        let list = new AccountList('#accounts');
-        await list.load();
-        $('#accounts').on('click', '.delete', async event => {
-            let $account = $(event.target).parents('.account');
-            let username = $account.find('.username').text();
-            let userId = $account.data('user-id');
-            if (!confirm(`是否要删除账号"${username}"的备份数据？`)) return false;
-            if (await list.remove(userId)) {
-                $account.fadeOut();
-            } else {
-                alert('删除失败。请在刷新页面后重试。');
-                location.reload();
-            }
-        }).on('click', '.account .media-left, .account .media-content', event => {
-            let userId = $(event.currentTarget).parents('.account').data('user-id');
-            location = 'explorer.html?' + userId;
+        const list = new AccountList('#accounts');
+        AccountList.instance = list;
+        document.querySelector('#account-search').addEventListener('input', () => list.filter());
+        list.element.addEventListener('click', event => {
+            const button = event.target.closest('.delete');
+            if (!button) return;
+            const account = button.closest('.account');
+            const userId = $(account).data('user-id');
+            const username = account.querySelector('.username').textContent;
+            if (!confirm(`删除“${username}”的本地备份？此操作无法撤销，不会删除豆瓣上的内容。建议先导出数据库。`)) return;
+            UI.action(button, async () => {
+                if (!await list.remove(userId)) throw new Error('删除失败，请关闭其他档案页面后重试。');
+                await list.load(); Notification.show('本地备份已删除');
+            });
         });
+        try { await list.load(); }
+        catch (error) {
+            list.element.textContent = '读取备份失败：' + error.message;
+            list.element.classList.add('state-message', 'is-danger');
+        }
     }
+
 }
 
 
@@ -95,6 +123,11 @@ class TaskModal {
     static init() {
         let modal = new TaskModal('#task-modal');
         TaskModal.instance = modal;
+        UI.selection(modal.element, 'input[name="task"], input[name="advanced-task"]');
+        const clearError = () => modal.element.querySelector('#task-error').classList.add('is-hidden');
+        modal.element.addEventListener('input', clearError);
+        modal.element.addEventListener('change', clearError);
+        window.addEventListener('hashchange', () => { if (location.hash === '#new-task') modal.open(); });
         if (location.hash === '#new-task') {
             modal.open();
         }
@@ -127,12 +160,16 @@ class TaskModal {
             }
         });
 
-        modal.element.querySelector('.button.new').addEventListener('click', async () => {
+        modal.element.querySelector('.button.new').addEventListener('click', event => UI.action(event.currentTarget, async () => {
+            const errorNode = modal.element.querySelector('#task-error');
+            errorNode.classList.add('is-hidden');
             let targetUserId = null;
             if (modal.enableTargetUser) {
                 targetUserId = modal.targetUserId;
                 if (!targetUserId) {
-                    alert('请输入正确的用户主页地址。');
+                    errorNode.textContent = '请输入有效的豆瓣用户主页，例如 https://www.douban.com/people/doufen-org/';
+                    errorNode.classList.remove('is-hidden');
+                    modal.userHomepageInput.focus();
                     return false;
                 }
             }
@@ -140,7 +177,8 @@ class TaskModal {
             try {
                 job = await modal.createJob(targetUserId);
             } catch (error) {
-                alert('创建备份任务失败：' + (error?.message || error));
+                errorNode.textContent = '创建备份任务失败：' + (error?.message || error);
+                errorNode.classList.remove('is-hidden');
                 return;
             }
             // await new Promise(resolve => setTimeout(resolve, 5000));
@@ -151,16 +189,15 @@ class TaskModal {
                 location.href = chrome.runtime.getURL('options.html#service'); // 在当前页面跳转
                 // history.pushState({}, '', 'options.html#service');
             }
-        });
+        }));
 
         return modal;
     }
 
     async createJob(targetUserId = null) {
-        let checkedTasks = this.element.querySelectorAll('input[name="task"]:checked, input[name="advanced-task"]:checked');
+        let checkedTasks = this.element.querySelectorAll('input[name="task"]:checked:not(:disabled), input[name="advanced-task"]:checked:not(:disabled)');
         if (checkedTasks.length === 0) {
-            alert('请勾选要备份的项目。');
-            return null;
+            throw new Error('请至少选择一项要备份的内容。');
         }
 
         let tasks = new Array(checkedTasks.length);
@@ -169,28 +206,30 @@ class TaskModal {
                 name: checkedTasks[i].value,
             };
         }
-        console.log("createJob tasks", tasks)
         const service = ServiceProxy.getProxy();
-        console.log("createJob service", service)
         let job = await service.createJob(targetUserId, null, tasks);
         return job;
     }
 
     open() {
+        this.element.querySelector('#task-error').classList.add('is-hidden');
         this.element.classList.add('is-active');
     }
 
     close() {
         this.element.classList.remove('is-active');
+        if (location.hash === '#new-task') history.replaceState(null, '', location.pathname);
     }
 
     get targetUserId() {
-        let val = (this.userHomepageInput.value || '').trim();
-        let matches = val.match(/(?:https?:\/\/)?(?:[a-zA-Z0-9_-]+\.)?douban\.com\/people\/([^\/\?#]+)/i);
-        if (matches) {
-            return matches[1];
-        }
-        return null;
+        let value = (this.userHomepageInput.value || '').trim();
+        if (!/^https?:\/\//i.test(value)) value = 'https://' + value;
+        try {
+            const url = new URL(value);
+            if (!['http:', 'https:'].includes(url.protocol) || !/(^|\.)douban\.com$/i.test(url.hostname) || url.username || url.password) return null;
+            const match = url.pathname.match(/^\/people\/([a-zA-Z0-9_-]+)\/?$/);
+            return match?.[1] || null;
+        } catch (_) { return null; }
     }
 
     get enableTargetUser() {
@@ -208,6 +247,7 @@ class BackupDbModal {
     open(message) {
         this.element.classList.add('is-active');
         this.message.innerText = message;
+        this.progressBar.value = 0;
     }
 
     close() {
@@ -222,8 +262,7 @@ class BackupDbModal {
 
 class Toolbar {
     reload() {
-        location.hash = '';
-        location.reload();
+        return UI.action(document.querySelector('#reload'), () => AccountList.instance.load());
     }
 
     newTask() {
@@ -234,15 +273,14 @@ class Toolbar {
         let toolbar = new Toolbar();
         $('#reload').click(() => toolbar.reload());
         $('#new-task').click(() => toolbar.newTask());
-        $('#backup-db').click(async () => {
-            if (!confirm('此操作可能需要耗时几分钟并占用大量内存。\r是否确定执行？')) return false;
+        $('#backup-db').click(event => UI.action(event.currentTarget, async () => {
             let modal = new BackupDbModal('#backup-db-modal');
             try {
-                modal.open('正在备份数据库。请不要关闭当前窗口');
+                modal.open('正在导出数据库，请保持此页面打开');
                 let storage = new Storage();
-                let blob = new Blob([await storage.dump(progress => {
+                let blob = new Blob([await withDatabaseMaintenance(() => storage.dump(progress => {
                     modal.onProgress(progress);
-                })], {type: "application/zip"});
+                }))], {type: "application/zip"});
                 FileSaver.saveAs(blob, 'tofu-db-backup.zip');    
             } catch (msg) {
                 alert(msg);
@@ -250,39 +288,58 @@ class Toolbar {
                 modal.close();
             }
 
-        });
+        }));
         $('#restore-db').change(async function () {
             let dbFile = this.files[0];
-            if (!dbFile) return false;
+            if (!dbFile || this.disabled) return false;
+            this.disabled = true;
             let modal = new BackupDbModal('#backup-db-modal');
             try {
-                modal.open('正在恢复数据库。请不要关闭当前窗口');
+                modal.open('正在恢复数据库，请保持此页面打开');
                 let storage = new Storage();
                 let buffer = new Uint8Array(await dbFile.arrayBuffer());
-                let result = await storage.restore(buffer, progress => {
+                let result = await withDatabaseMaintenance(() => storage.restore(buffer, progress => {
                     modal.onProgress(progress);
-                });
-                var message = `成功：${result.successes.length}\n`;
-                for (let success of result.successes) {
-                    message += `- ${success.database}\n`;
-                }    
-                message += `失败：${result.failures.length}\n`;
-                for (let failure of result.failures) {
-                    message += `- ${failure.database}：${failure.error}\n`;
+                }));
+                await AccountList.instance.load();
+                let report = document.querySelector('#restore-result');
+                if (!report) {
+                    report = document.createElement('section'); report.id = 'restore-result';
+                    report.className = 'container thin notification';
+                    document.querySelector('#accounts').before(report);
                 }
-                setTimeout(() => {
-                    alert(message);
-                    location.reload();
-                }, 1);
+                report.replaceChildren(); report.setAttribute('role', 'status');
+                const title = document.createElement('strong');
+                title.textContent = `恢复完成：${result.successes.length} 个成功，${result.failures.length} 个未导入`;
+                const details = document.createElement('details');
+                const summary = document.createElement('summary'); summary.textContent = '查看恢复结果';
+                const description = document.createElement('pre');
+                description.textContent = [...result.successes.map(item => `已恢复 ${item.database}`),
+                    ...result.failures.map(item => `${item.database}：${item.error}`)].join('\n');
+                details.append(summary, description); report.append(title, details);
+                report.scrollIntoView({block: 'center'});
             } catch (msg) {
                 alert(msg);
             } finally {
                 modal.close();
+                this.value = '';
+                this.disabled = false;
             }
         });
     }
 }
 
+async function withDatabaseMaintenance(operation) {
+    return navigator.locks.request('tofu-database-maintenance', {ifAvailable: true}, async lock => {
+        if (!lock) throw new Error('其他页面正在管理数据库或创建任务，请稍后重试。');
+        const service = ServiceProxy.getProxy();
+        const [status, unfinished] = await Promise.all(['status', 'hasUnfinishedJobs'].map(name => service.getProperty(name)));
+        if (status !== 1 || unfinished) throw new Error('请等待当前备份和队列全部完成，再管理数据库。暂停的任务仍会使用这份数据。');
+        return operation();
+    });
+}
+
+UI.dialogs();
 TaskModal.init();
 AccountList.render();
 Toolbar.render();

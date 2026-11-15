@@ -1,5 +1,6 @@
 'use strict';
-import Settings from './settings.js';
+import Settings, {SERVICE_SETTINGS} from './settings.js';
+export {SERVICE_SETTINGS} from './settings.js';
 import Job from './services/Job.js';
 import AsyncBlockingQueue from "./services/AsyncBlockingQueue.js";
 import StateChangeEvent from "./services/StateChangeEvent.js";
@@ -28,6 +29,9 @@ import MigrateNote from './tasks/migrate/note.js';
 import MigrateReview from './tasks/migrate/review.js';
 import {validId} from './tasks/migrate/MigrationTask.js';
 
+const RPC_METHODS = new Set(['ping', 'start', 'stop', 'createJob', 'previewMigration', 'loadSettings']);
+const RPC_PROPERTIES = new Set(['status', 'currentJob', 'displayJob', 'debug', 'requestInterval', 'queuedJobCount', 'hasUnfinishedJobs']);
+
 const TASK_MODULES = {
     'annotation': Annotation,
     'blacklist': Blacklist,
@@ -54,11 +58,7 @@ const TASK_MODULES = {
 /**
  * Service settings
  */
-export const SERVICE_SETTINGS = {
-    'service.debug': false,
-    'service.requestInterval': 1000,
-    'service.cloudinary': '',
-};
+
 
 /**
  * Class Service
@@ -101,6 +101,7 @@ export default class Service extends EventTarget {
         return {
             _currentJob: this._currentJob ? this._currentJob.toJSON() : null, // 序列化当前任务
             _ports: [], // 运行时 Port 实例不可序列化
+            lastJob: this._lastJob || null,
             _jobQueueTasks: this._jobQueue.items.map(job => job.toJSON()),
             _status: this._status,
             lastRequest: this.lastRequest,
@@ -124,6 +125,7 @@ export default class Service extends EventTarget {
         instance._requestInterval = json._requestInterval !== undefined ? json._requestInterval : 1000;
 
         // 重新初始化任务队列
+        instance._lastJob = json.lastJob || null;
         instance._jobQueue = new AsyncBlockingQueue();
         if (json._jobQueueTasks && json._jobQueueTasks.length > 0) {
             for (let jobJson of json._jobQueueTasks) {
@@ -294,6 +296,8 @@ export default class Service extends EventTarget {
                 // The listener is registered synchronously on worker startup;
                 // don't let an early UI request race with restoring its state.
                 await this._initialization;
+                const allowed = message.isProperty ? RPC_PROPERTIES : RPC_METHODS;
+                if (!allowed.has(message.method)) throw new Error('不支持的后台操作');
                 if (message.isProperty) {
                     retVal = this[message.method];
                 } else {
@@ -366,7 +370,17 @@ export default class Service extends EventTarget {
     /**
      * Start handling task queue
      */
-    async start() {
+    static withDatabaseLock(operation) {
+        if (typeof navigator === 'undefined' || !navigator.locks) return operation();
+        return navigator.locks.request('tofu-database-maintenance', {ifAvailable: true}, lock => {
+            if (!lock) throw new Error('数据库正在导入、导出或删除，请稍后再启动任务。');
+            return operation();
+        });
+    }
+
+    async start() { return Service.withDatabaseLock(() => this._start()); }
+
+    async _start() {
         console.log("service start")
         let originalState = this._status;
         if (originalState !== Service.STATE_STOPPED) return false;
@@ -442,7 +456,9 @@ export default class Service extends EventTarget {
         }
     }
 
-    async createJob(targetUserId, localUserId, tasks, isOffline = false, migrationPlan = null) {
+    async createJob(...args) { return Service.withDatabaseLock(() => this._createJob(...args)); }
+
+    async _createJob(targetUserId, localUserId, tasks, isOffline = false, migrationPlan = null) {
         this.logger.debug('Creating a job...');
         if (!Array.isArray(tasks) || tasks.length === 0) {
             throw new Error('请至少选择一个有效的备份任务。');
@@ -483,7 +499,7 @@ export default class Service extends EventTarget {
         this._jobQueue.enqueue(job);
         await this.saveState();
         if (this._status === Service.STATE_STOPPED) {
-            await this.start();
+            await this._start();
         }
         return job.toJSON();
     }
@@ -559,6 +575,12 @@ export default class Service extends EventTarget {
      * Get current job
      * @returns {Job|null}
      */
+    get hasUnfinishedJobs() { return !!this._currentJob || !this._jobQueue.isEmpty(); }
+
+    get queuedJobCount() { return this._jobQueue.length; }
+
+    get displayJob() { return this._currentJob || this._lastJob || null; }
+
     get currentJob() {
         return this._currentJob;
     }
@@ -599,6 +621,7 @@ export default class Service extends EventTarget {
 
             // 将恢复的状态赋值给当前实例
             this._currentJob = restoredService._currentJob;
+            this._lastJob = restoredService._lastJob;
             this._ports = restoredService._ports;
             this._jobQueue = restoredService._jobQueue;
             this._status = restoredService._status;
@@ -657,6 +680,9 @@ export default class Service extends EventTarget {
                 } else {
                     logger.debug('Job completed...');
                 }
+                service._lastJob = {...service._currentJob.toJSON(), finishedAt: Date.now()};
+                delete service._lastJob._session;
+                for (const task of service._lastJob.tasks) { delete task.session; delete task.targetUser; }
                 service._currentJob = null;
                 if (service._jobQueue.isEmpty()) {
                     // A drained queue is a completed backup, not an indefinitely
@@ -666,6 +692,7 @@ export default class Service extends EventTarget {
             } catch (e) {
                 console.error(e)
                 logger.error(e);
+                if (service._currentJob) service._currentJob._errorMessage = e?.message || String(e);
                 await recordDiagnostic(service._currentJob?._diagnosticRunId, 'job.finished', {
                     outcome: 'failed', errorType: e?.name || 'Error', errorStack: e?.stack,
                 });

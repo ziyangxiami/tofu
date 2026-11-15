@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 
 <head>
     <meta charset="UTF-8">
@@ -8,7 +8,6 @@
     <link rel="shortcut icon" href="images/icon-32x32.png" type="image/png">
     <link type="text/css" rel="stylesheet" href="vendor/bulma.min.css">
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
-    <script src="vendor/xlsx.full.min.js"></script>
     <script src="vendor/zepto.min.js"></script>
     <style>
         figure { overflow: hidden; }
@@ -28,22 +27,23 @@
         .is-obsolete { background-color: #ccc; padding: 1rem; margin-bottom: -1rem; }
         .status-images figure { margin-left: 0; }
     </style>
+    <link rel="stylesheet" href="ui/app.css">
 </head>
 
-<body>
+<body class="explorer-page">
     <nav class="navbar">
         <div class="container">
             <div class="navbar-brand">
-                <a class="navbar-item" href="https://doufen.org/" target="_blank">
-                    <img src="images/logo-main.png" alt="豆伴" title="豆伴">
+                <a class="navbar-item" href="backup.html" aria-label="豆伴备份首页">
+                    <img src="images/icon-48x48.png" alt=""><span class="brand-name">豆伴</span><span class="brand-note">我的豆瓣档案</span>
                 </a>
-                <a role="button" class="navbar-burger">
+                <button type="button" class="navbar-burger" aria-label="展开导航" aria-expanded="false">
                     <span aria-hidden="true"></span>
                     <span aria-hidden="true"></span>
                     <span aria-hidden="true"></span>
-                </a>
+                </button>
             </div>
-            <div class="navbar-menu">
+            <div class="navbar-menu" id="main-navigation">
                 <div class="navbar-end">
                     <div class="navbar-item">
                         <div class="buttons">
@@ -53,24 +53,24 @@
                                 </span>
                                 <span>返回</span>
                             </a>
-                            <a class="button" name="export" title="将该用户数据导出到 Excel 文件中">
+                            <button type="button" class="button" name="export" title="将该用户数据导出到 Excel 文件中">
                                 <span class="icon">
                                     <i class="fas fa-file-export"></i>
                                 </span>
                                 <span>导出数据</span>
-                            </a>
-                            <a class="button" name="migrate" title="将该用户数据迁移到我的豆瓣账号中">
+                            </button>
+                            <button type="button" class="button" name="migrate" title="将该用户数据迁移到我的豆瓣账号中">
                                 <span class="icon">
                                     <i class="fas fa-exchange-alt"></i>
                                 </span>
                                 <span>迁移数据</span>
-                            </a>
-                            <a class="button" name="upload" title="将该用户的图片上传到云">
+                            </button>
+                            <button type="button" class="button" name="upload" title="将该用户的图片上传到云">
                                 <span class="icon">
                                     <i class="fas fa-file-upload"></i>
                                 </span>
                                 <span>上传图片</span>
-                            </a>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -80,6 +80,8 @@
     <script src="./ui/navbar.js"></script>
 
     <section class="section">
+        <header class="container page-heading"><div><p class="eyebrow">THE ARCHIVE</p><h1 id="archive-title">我的豆瓣档案</h1><p class="description" id="archive-description">正在读取账号信息…</p></div><div class="heading-aside"><a class="button is-light" href="options.html#service">任务中心 →</a></div></header>
+        <div class="container toolbar"><div class="toolbar-label">翻阅存档</div><input class="input search" type="search" id="archive-search" aria-label="筛选当前页的文字" placeholder="筛选当前页的文字"><span class="toolbar-meta">全文可通过 Excel 导出检索</span></div>
         <div class="container">
             <div class="tabs is-centered is-boxed">
                 <ul>
@@ -377,7 +379,7 @@
                     </div>
                 </div>
             </section>
-            <footer class="modal-card-foot">
+            <footer class="modal-card-foot"><span class="selection-count" aria-live="polite"></span>
                 <button class="button is-link" name="export">导出</button>
                 <button class="button cancel">取消</button>
             </footer>
@@ -393,7 +395,7 @@
             </header>
             <section class="modal-card-body">
                 <div class="content">
-                    <p>该功能可以将此备份数据导入到你<a href="options.html#account" target="_blank">当前登录</a>的豆瓣账号中。另外，请在<a href="https://www.douban.com/settings/" target="_blank">广播设置</a>中关闭各事件广播，以免扰邻。</p>
+                    <p>该功能可以将此备份数据导入到你<a href="options.html#account" target="_blank" rel="noopener noreferrer">当前登录</a>的豆瓣账号中。另外，请在<a href="https://www.douban.com/settings/" target="_blank" rel="noopener noreferrer">广播设置</a>中关闭各事件广播，以免扰邻。</p>
                 </div>
                 <div class="level">
                     <div class="level-left">
@@ -476,7 +478,7 @@
                     </div>
                 </div>
             </section>
-            <footer class="modal-card-foot">
+            <footer class="modal-card-foot"><span class="selection-count" aria-live="polite"></span>
                 <button class="button is-link" name="migrate">迁移</button>
                 <button class="button cancel">取消</button>
             </footer>

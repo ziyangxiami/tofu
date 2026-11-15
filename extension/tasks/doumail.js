@@ -2,6 +2,7 @@
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
 import {numericId, htmlPageCount} from './_validation.js';
+import {recordDiagnostic} from '../services/diagnostics.js';
 
 
 const PAGE_SIZE = 20;
@@ -15,6 +16,7 @@ export default class Doumail extends Task {
             throw new TaskError('不能备份其他用户的豆邮');
         }
         let pageCount = 1;
+        const seenContacts = new Set();
         for (let i = 0; i < pageCount; i ++) {
             let fetch = await this.fetch
             let response = await fetch(URL_DOUMAIL.replace('{start}', i * PAGE_SIZE));
@@ -25,11 +27,27 @@ export default class Doumail extends Task {
             if (!html.querySelector('.doumail-list')) {
                 throw new TaskError('无法识别豆邮列表，请确认登录状态或页面是否需要验证');
             }
-            pageCount = htmlPageCount(html);
+            try {
+                pageCount = htmlPageCount(html, i + 1);
+            } catch (error) {
+                await recordDiagnostic(this.diagnosticRunId, 'doumail.pagination', {
+                    task: 'Doumail', pages: i + 1, reason: 'invalid_response',
+                });
+                throw error;
+            }
             this.total = pageCount * PAGE_SIZE;
-            for (let contact of html.querySelectorAll('.doumail-list>ul>li')) {
+            const contacts = html.querySelectorAll('.doumail-list>ul>li');
+            if (contacts.length === 0 && (i > 0 || pageCount > 1)) {
+                await recordDiagnostic(this.diagnosticRunId, 'doumail.pagination', {
+                    task: 'Doumail', pages: i + 1, apiGroups: 0, reason: 'empty_response',
+                });
+                throw new TaskError('豆邮分页未返回会话，已保留旧备份');
+            }
+            for (let contact of contacts) {
                 let operationAnchor = contact.querySelector('.operations>.post_link.report');
                 let userId = numericId(operationAnchor?.dataset?.id || operationAnchor?.getAttribute('data-id'), '豆邮联系人');
+                if (seenContacts.has(userId)) throw new TaskError('豆邮会话分页重复，已保留旧备份');
+                seenContacts.add(userId);
                 let contactName = operationAnchor ? (operationAnchor.dataset?.sname || operationAnchor.getAttribute('data-sname') || '') : '';
                 let contactUrl = operationAnchor ? (operationAnchor.dataset?.slink || operationAnchor.getAttribute('data-slink') || '') : '';
                 let contactAvatarImg = contact.querySelector('.pic img');
@@ -121,6 +139,9 @@ export default class Doumail extends Task {
                 this.step();
             }
         }
+        // pageCount * PAGE_SIZE is only an estimate while scanning. The last
+        // page can have fewer contacts; do not inflate the final saved count.
+        this.total = this.completion;
         this.complete();
     }
 

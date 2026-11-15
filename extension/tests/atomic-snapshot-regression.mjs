@@ -275,7 +275,8 @@ await check('a new unfinished account renders a clear placeholder instead of the
     const account = {userId: 303, userInfo: {}, updated: null};
     const element = {find: selector => ({text: value => displayed.set(selector, value), attr() {}}),
         data() {}, appendTo() {}};
-    const view = vm.createContext({document: {querySelector: () => ({})}, $: () => element,
+    const host = {replaceChildren() {}, querySelector: () => null, querySelectorAll: () => [], value: ''};
+    const view = vm.createContext({document: {querySelector: () => host}, $: () => element, Content: {url: () => ''},
         Storage: class { global = {open: async () => {}, close() {}, account: {toArray: async () => [account]}}; }});
     const AccountList = new vm.Script(classSource + '\nAccountList').runInContext(view);
     await new AccountList('#accounts').load();

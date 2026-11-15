@@ -283,6 +283,16 @@ export default class Storage {
                 } finally {
                     db.close();
                 }
+                if (database === DB_NAME) {
+                    const data = JSON.parse(dbJson);
+                    // Portable archives need profile metadata and the version
+                    // sequence, never login cookies or resumable task sessions.
+                    if (Array.isArray(data.account)) data.account = data.account.map(account => {
+                        const {cookies, session, _session, ...profile} = account; return profile;
+                    });
+                    if (Array.isArray(data.job)) data.job = data.job.map(({id, userId, created}) => ({id, userId, created}));
+                    dbJson = JSON.stringify(data);
+                }
                 backupData[database + '.json'] = fflate.strToU8(dbJson);
                 onProgress(completed ++ / total);
             }
@@ -340,7 +350,7 @@ export default class Storage {
             if (!unzippedFile) throw '压缩包内未找到数据库信息';
 
             let dbMeta = JSON.parse(fflate.strFromU8(unzippedFile));
-            if (dbMeta.global.version != SCHEMA_GLOBAL.length || dbMeta.local.version != SCHEMA_LOCAL.length) {
+            if (dbMeta?.global?.version != SCHEMA_GLOBAL.length || dbMeta?.local?.version != SCHEMA_LOCAL.length || !Array.isArray(dbMeta.local.files)) {
                 throw '数据库版本不一致';
             };
 
@@ -352,6 +362,7 @@ export default class Storage {
             unzippedFile = await unzipFile(globalDbFilename);
             if (!unzippedFile) throw `压缩包缺失文件："${globalDbFilename}"`;
             let globalDb = JSON.parse(fflate.strFromU8(unzippedFile));
+            if (!Array.isArray(globalDb?.account) || (globalDb.job !== undefined && !Array.isArray(globalDb.job))) throw new Error('备份账号目录格式错误');
             onProgress(completed ++ / total);
 
             await this.global.open();
@@ -361,67 +372,39 @@ export default class Storage {
                     if (Number.isSafeInteger(job.id) && job.id > maxVersion) maxVersion = job.id;
                 }
                 await this.reserveJobIds(maxVersion);
-                for (let account of globalDb.account) {
-                    let dbName = `${DB_NAME}[${account.userId}]`;
-                    let dbFilename = dbName + '.json';
-                    console.log(`importing ${dbFilename}`);
-                    if (await this.global.account.get({userId: account.userId})) {
-                        failures.push({
-                            'database': dbName,
-                            'filename': dbFilename,
-                            'error': '数据库已存在'
-                        });
-                        onProgress(completed ++ / total);
-                        continue;
-                    }
-                    let dbFile = await unzipFile(dbFilename);
-                    if (!dbFile) {
-                        failures.push({
-                            'database': dbName,
-                            'filename': dbFilename,
-                            'error': '数据库文件缺失'
-                        });
-                        continue;
-                    }
-
-                    const localData = JSON.parse(fflate.strFromU8(dbFile));
-                    for (const rows of Object.values(localData)) {
-                        if (!Array.isArray(rows)) continue;
-                        for (const row of rows) {
-                            if (Number.isSafeInteger(row?.version) && row.version > maxVersion) {
-                                maxVersion = row.version;
+                for (const account of globalDb.account) {
+                    const dbName = `${DB_NAME}[${account?.userId}]`;
+                    const dbFilename = dbName + '.json';
+                    let localDb;
+                    try {
+                        if (!Number.isSafeInteger(account?.userId) || account.userId <= 0) throw new Error('备份账号 ID 无效');
+                        if (await this.global.account.get({userId: account.userId})) throw new Error('数据库已存在，未覆盖本地内容');
+                        const dbFile = await unzipFile(dbFilename);
+                        if (!dbFile) throw new Error('数据库文件缺失');
+                        const localData = JSON.parse(fflate.strFromU8(dbFile));
+                        if (!localData || Array.isArray(localData) || typeof localData !== 'object') throw new Error('数据库内容格式错误');
+                        for (const rows of Object.values(localData)) {
+                            if (!Array.isArray(rows)) continue;
+                            for (const row of rows) {
+                                if (Number.isSafeInteger(row?.version) && row.version > maxVersion) maxVersion = row.version;
                             }
                         }
-                    }
-                    await this.reserveJobIds(maxVersion);
-                    let localDb = this.getLocalDb(account.userId);
-                    await localDb.open();
-                    try {
+                        await this.reserveJobIds(maxVersion);
+                        localDb = this.getLocalDb(account.userId);
+                        await localDb.open();
                         await new Promise((resolve, reject) => {
-                            importFromJsonString(localDb.backendDB(), fflate.strFromU8(dbFile), (error) => {
-                                if (error) {
-                                    reject(error);
-                                } else {
-                                    resolve();
-                                }
-                            });
+                            importFromJsonString(localDb.backendDB(), fflate.strFromU8(dbFile), error => error ? reject(error) : resolve());
                         });
-                        await this.global.account.put(account);
-                        successes.push({
-                            'database': dbName,
-                            'filename': dbFilename
-                        });
+                        const {cookies, session, _session, ...profile} = account;
+                        await this.global.account.put(profile);
+                        successes.push({database: dbName, filename: dbFilename});
                     } catch (error) {
-                        failures.push({
-                            'database': dbName,
-                            'filename': dbFilename,
-                            'error': error
-                        });
+                        failures.push({database: dbName, filename: dbFilename, error: error?.message || String(error)});
                     } finally {
-                        localDb.close();
+                        localDb?.close();
+                        onProgress(completed++ / (globalDb.account.length + 2));
                     }
-                    onProgress(completed ++ / total);
-                }    
+                }
             } finally {
                 this.global.close();
             }

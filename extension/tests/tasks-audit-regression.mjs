@@ -15,7 +15,7 @@ function synthetic(path, exports) {
     modules.set(resolve(root, path), module);
 }
 synthetic('storage.js', {default: class Storage {}});
-synthetic('settings.js', {default: {
+synthetic('settings.js', {TASK_FILES_SETTINGS: {}, default: {
     async load() { return {cloudName: 'test-cloud'}; },
     apply(target, settings) { Object.assign(target, settings); },
 }});
@@ -344,5 +344,178 @@ await check('HTML pagination rejects invalid totalPage instead of silently stopp
     assert.equal(helper.namespace.htmlPageCount(parse('<div class="paginator"><span class="thispage" data-total-page="3"></span></div>')), 3);
     assert.throws(() => helper.namespace.htmlPageCount(parse('<div class="paginator"><span class="thispage"></span></div>')), /分页信息无效/);
     assert.throws(() => helper.namespace.htmlPageCount(parse('<div class="paginator"><span class="thispage" data-total-page="NaN"></span></div>')), /分页信息无效/);
+});
+await check('photo: recover a nonnumeric album ID from its canonical Douban URL', async () => {
+    const {task, db} = await setup('photo', async url => url.includes('/rexxar/') ?
+        json({total: 1, photo_albums: [{id: 'unavailable', privacy: 'public', url: 'https://www.douban.com/photos/album/10/?sortby=time'}]}) :
+        html('<a class="photolst_photo" href="https://www.douban.com/photos/photo/12/"><img src="https://img.doubanio.com/m/a.jpg"></a>'));
+    await task.run();
+    assert.equal((await db.album.get(10)).id, 10);
+    assert.equal((await db.photo.get(12)).album, 10);
+    assert.equal((await db.version.get('photo')).version, 2);
+    assert.equal(task.completion, 1);
+});
+for (const url of ['https://example.com/photos/album/10/', 'https://www.douban.com/people/10/photos',
+    'https://www.douban.com/photos/album/0/', 'https://www.douban.com/photos/album/9007199254740992/']) {
+    await check('photo: an unresolvable ID fails without guessing or publishing a new version', async () => {
+        const db = storage([{table: 'photo', version: 1}]);
+        const old = {id: 10, version: 1, album: {title: 'saved'}};
+        await db.album.put(old);
+        let requests = 0;
+        const {task} = await setup('photo', async () => {
+            requests++;
+            return json({total: 1, photo_albums: [{url}]});
+        }, db);
+        await assert.rejects(() => task.run(), /相册缺少有效 ID/);
+        assert.equal(requests, 1);
+        assert.deepEqual(await db.album.get(10), old);
+        assert.equal((await db.version.get('photo')).version, 1);
+    });
+}
+await check('photo: repeated album IDs cannot silently complete a snapshot', async () => {
+    const db = storage([{table: 'photo', version: 1}]);
+    const {task} = await setup('photo', async url => url.includes('/rexxar/') ?
+        json({total: 2, photo_albums: [1, 2].map(() => ({id: '10', url: 'https://www.douban.com/photos/album/10/'}))}) :
+        html('<div></div>'), db);
+    await assert.rejects(() => task.run(), /重复 ID/);
+    assert.equal((await db.version.get('photo')).version, 1);
+});
+
+await check('pagination: numbered and next links work without data-total-page', async () => {
+    const helper = await load('tasks/_validation.js');
+    const parser = await load('services/html_parser.js');
+    const parse = parser.namespace.default;
+    const count = html => helper.namespace.htmlPageCount(parse(html));
+    assert.equal(count('<div class="paginator"><span class="thispage">1</span><a href="?start=20">2</a><a href="?start=80">5</a><span class="next"><a href="?start=20">后页</a></span></div>'), 5);
+    assert.equal(count('<div class="paginator"><span class="thispage">1</span><span class="next"><a href="?start=20">后页</a></span></div>'), 2);
+    assert.equal(count('<div class="paginator"><span class="prev"><a href="?start=60">前页</a></span><span class="thispage">5</span><span class="next">后页</span></div>'), 5);
+    assert.throws(() => helper.namespace.htmlPageCount(parse('<div class="paginator"><span class="thispage">1</span></div>'), 2), /页码与请求不一致/);
+    assert.throws(() => count('<div class="paginator"><a href="?start=20">后页</a></div>'), /分页信息无效/);
+    assert.throws(() => count('<div class="paginator"><span class="thispage">9007199254740991</span><span class="next"><a href="?start=20">后页</a></span></div>'), /分页信息无效/);
+});
+
+function mailPage(contact, page) {
+    return `<div class="doumail-list"><ul><li><div class="operations"><a class="post_link report" data-id="${contact}"></a></div><div class="title"><a class="url" href="https://www.douban.com/doumail/${contact}/">会话</a></div></li></ul></div>` +
+        `<div class="paginator"><span class="thispage">${page}</span>` +
+        (page === 1 ? '<a href="?start=20">2</a><span class="next"><a href="?start=20">后页</a></span>' : '<a href="?start=0">1</a><span class="next">后页</span>') + '</div>';
+}
+await check('doumail: scans both link-paginated pages and reports actual contacts, not page capacity', async () => {
+    const offsets = [];
+    const {task, db} = await setup('doumail', async (url, init) => {
+        if (url.includes('/j/doumail/')) {
+            const contact = Number(init.body.get('target_id'));
+            return json({more: 0, html: `<div class="chat" data="${contact * 10}"><div class="content">Message</div></div>`});
+        }
+        const start = Number(new URL(url).searchParams.get('start'));
+        offsets.push(start);
+        return html(mailPage(start === 0 ? 11 : 12, start === 0 ? 1 : 2));
+    });
+    await task.run();
+    assert.deepEqual(offsets, [0, 20]);
+    assert.equal(db.doumail.rows.size, 2);
+    assert.equal(db.doumailContact.rows.size, 2);
+    assert.equal(task.completion, 2);
+    assert.equal(task.total, 2);
+});
+await check('doumail: a repeated first page is a failure instead of duplicate progress', async () => {
+    const {task} = await setup('doumail', async url => url.includes('/j/doumail/') ?
+        json({more: 0, html: ''}) : html(mailPage(11, 1)));
+    await assert.rejects(() => task.run(), /页码与请求不一致/);
+    assert.equal(task.completion, 1);
+});
+await check('doumail: empty multi-page lists and duplicate contacts cannot report success', async () => {
+    const empty = await setup('doumail', async () => html('<div class="doumail-list"></div><div class="paginator"><span class="thispage">1</span><a href="?start=20">2</a></div>'));
+    await assert.rejects(() => empty.task.run(), /分页未返回会话/);
+    let page = 0;
+    const duplicate = await setup('doumail', async url => url.includes('/j/doumail/') ?
+        json({more: 0, html: ''}) : html(mailPage(11, ++page)));
+    await assert.rejects(() => duplicate.task.run(), /会话分页重复/);
+    assert.equal(duplicate.task.completion, 1);
+});
+await check('photo: link pagination with missing photo rows cannot publish', async () => {
+    const db = storage([{table: 'photo', version: 1}]);
+    const {task} = await setup('photo', async url => url.includes('/rexxar/') ?
+        json({total: 1, photo_albums: [{id: 10, url: 'https://www.douban.com/photos/album/10/'}]}) :
+        html('<div class="paginator"><span class="thispage">1</span><a href="?m_start=18">2</a></div>'), db);
+    await assert.rejects(() => task.run(), /分页未返回照片/);
+    assert.equal((await db.version.get('photo')).version, 1);
+});
+
+await check('doulist: logged 55-total/empty-first-page response retries once then retains published data', async () => {
+    const db = storage([{table: 'doulist', version: 1}]);
+    const old = {id: 10, version: 1, doulist: {title: 'old list'}};
+    await db.doulist.put(old);
+    const calls = [];
+    const {task} = await setup('doulist', async url => {
+        calls.push(url);
+        return json({total: 55, doulists: []});
+    }, db);
+    await assert.rejects(() => task.run(), /共有 55 个.*第 1 页连续两次为空/);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0], calls[1]);
+    assert(calls.every(url => url.includes('/owned_doulists')));
+    assert.deepEqual(await db.doulist.get(10), old);
+    assert.equal((await db.version.get('doulist')).version, 1);
+});
+await check('doulist: a transient empty page recovers on the same page without skipping content', async () => {
+    let ownedReads = 0;
+    const {task, db} = await setup('doulist', async url => {
+        if (url.includes('/owned_doulists')) {
+            ownedReads++;
+            assert.equal(new URL(url).searchParams.get('start'), '0');
+            return json({total: 1, doulists: ownedReads === 1 ? [] : [{id: '10', title: 'recovered', url: 'https://www.douban.com/doulist/10/'}]});
+        }
+        if (url.includes('/following_doulists')) return json({total: 0, doulists: []});
+        return html('<div></div>');
+    });
+    await task.run();
+    assert.equal(ownedReads, 2);
+    assert.equal((await db.doulist.get(10)).doulist.title, 'recovered');
+    assert.equal(task.completion, 1);
+    assert.equal((await db.version.get('doulist')).version, 2);
+});
+await check('doulist: a later empty page never advances past the missing content or publishes', async () => {
+    const db = storage([{table: 'doulist', version: 1}]);
+    const offsets = [];
+    const {task} = await setup('doulist', async url => {
+        if (!url.includes('/rexxar/')) return html('<div></div>');
+        assert(url.includes('/owned_doulists'), 'must not continue into followed lists after a failed page');
+        const start = Number(new URL(url).searchParams.get('start'));
+        offsets.push(start);
+        return json({total: 55, doulists: start === 0 ? Array.from({length: 50}, (_, i) =>
+            ({id: i + 1, url: `https://www.douban.com/doulist/${i + 1}/`})) : []});
+    }, db);
+    await assert.rejects(() => task.run(), /第 2 页连续两次为空/);
+    assert.deepEqual(offsets, [0, 50, 50]);
+    assert.equal(task.completion, 50);
+    assert.equal((await db.version.get('doulist')).version, 1);
+});
+for (const response of [json({total: 0, doulists: [{id: 10}]}), json({doulists: []}), json({total: 55, doulists: []}, 403)]) {
+    await check('doulist: invalid totals and HTTP failures still fail immediately', async () => {
+        const db = storage([{table: 'doulist', version: 1}]);
+        let calls = 0;
+        const {task} = await setup('doulist', async () => { calls++; return response; }, db);
+        await assert.rejects(() => task.run(), /豆瓣服务器返回错误|有效总数/);
+        assert.equal(calls, 1);
+        assert.equal((await db.version.get('doulist')).version, 1);
+    });
+}
+await check('doulist: authoritative owned and followed totals are added without profile counts', async () => {
+    const {task} = await setup('doulist', async url => {
+        if (url.includes('/rexxar/')) {
+            const ids = url.includes('/owned_doulists') ? [10, 11] : [20, 21, 22];
+            return json({total: ids.length, doulists: ids.map(id => ({id, url: `https://www.douban.com/doulist/${id}/`}))});
+        }
+        return html('<div></div>');
+    });
+    await task.run();
+    assert.equal(task.total, 5);
+    assert.equal(task.completion, 5);
+});
+await check('doulist: a confirmed empty account finishes at zero rather than the initial placeholder', async () => {
+    const {task} = await setup('doulist', async () => json({total: 0, doulists: []}));
+    await task.run();
+    assert.equal(task.total, 0);
+    assert.equal(task.completion, 0);
 });
 console.log(`task audit regression: ${checks} passed`);

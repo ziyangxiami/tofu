@@ -1,45 +1,18 @@
-/**
- * Class Notification
- */
 export default class Notification {
-    constructor(message, type) {
-        let notification = document.createElement('DIV');
-        notification.classList.add('notification');
-        notification.classList.add('has-text-centered');
-        notification.classList.add('is-' + type);
-        notification.innerText = message;
-
-        return notification;
-    }
-
-    static show(message, {duration = 1000, type = 'warning'} = {}) {
-        let $notification = $(new Notification(message, type));
-        $notification.appendTo('.notification-cascading');
-
-        setTimeout(() => {
-            $notification.fadeOut('slow', () => {
-                $notification.remove();
-            });    
-        }, duration);
+    static show(message, {duration = 5000, type = 'success'} = {}) {
+        let host = document.querySelector('.notification-cascading');
+        if (!host) {
+            host = document.createElement('div'); host.className = 'notification-cascading';
+            document.body.append(host);
+        }
+        const element = document.createElement('div');
+        element.className = `notification is-${type}`;
+        element.setAttribute('role', type === 'danger' ? 'alert' : 'status');
+        const messageNode = document.createElement('span'); messageNode.textContent = message;
+        const close = document.createElement('button'); close.className = 'delete';
+        close.setAttribute('aria-label', '关闭提示'); close.onclick = () => element.remove();
+        element.append(messageNode, close); host.append(element);
+        if (duration > 0) setTimeout(() => element.remove(), duration);
+        return element;
     }
 }
-
-$(`\
-<style scoped>
-.notification-cascading {
-    position: fixed;
-    top: 0;
-    z-index: 999;
-    max-width: 16rem;
-    left: 0;
-    right: 0;
-    margin: 0 auto;
-}
-
-.notification {
-    padding: 1rem;
-    margin-bottom: 2px!important;
-}
-</style>
-<div class="notification-cascading"></div>
-`).appendTo(document.body);

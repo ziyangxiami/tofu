@@ -67,7 +67,7 @@ const ioModule = new vm.SyntheticModule(['importFromJsonString', 'exportToJsonSt
         importedFiles.push({db, data: JSON.parse(json)});
         callback(null);
     });
-    this.setExport('exportToJsonString', (db, callback) => callback(null, JSON.stringify({db})));
+    this.setExport('exportToJsonString', (db, callback) => callback(null, JSON.stringify(db === 'tofu' ? {db, account:[{userId:1, username:'kept', cookies:{dbcl2:'SECRET_COOKIE'}}], job:[{id:42,userId:1,created:7,tasks:[{session:{cookies:{ck:'SECRET_CK'}}}]}]} : {db})));
 }, {context});
 const zipModule = new vm.SyntheticModule(['strToU8', 'strFromU8', 'zip', 'unzip'], function () {
     this.setExport('strToU8', value => value);
@@ -90,6 +90,9 @@ const dumped = await new Storage().dump(() => {});
 assert.deepEqual(Object.keys(dumped).sort(), ['database.json', 'tofu.json', 'tofu[1].json']);
 assert.deepEqual(opened, ['tofu', 'tofu[1]']);
 assert.deepEqual(closed, opened, 'exported database handles must be closed');
+assert(!JSON.stringify(dumped).includes('SECRET_'), 'portable archive must not export login credentials');
+assert.equal(JSON.parse(dumped['tofu.json']).job[0].id,42,'export must retain the backup version sequence');
+assert.equal(JSON.parse(dumped['tofu.json']).account[0].username,'kept');
 
 const accounts = new Map();
 const jobs = new Map([[5, {id: 5, userId: 999, tasks: ['existing history']}]]);
@@ -137,6 +140,18 @@ assert.equal(jobs.has(77), false, 'import must not restore runnable jobs');
 assert.equal(jobs.has(90), false, 'temporary generator reservation must not remain in history');
 assert.deepEqual(jobs.get(5).tasks, ['existing history']);
 
+// One corrupt account must not abort later accounts or obscure partial success.
+const partialArchive = {
+    'database.json': JSON.stringify({global:{version:2},local:{version:5,files:['tofu[124]','tofu[125]']}}),
+    'tofu.json': JSON.stringify({account:[{userId:124},{userId:125,cookies:{dbcl2:'OLD_SESSION'}}],job:[]}),
+    'tofu[124].json': '{broken', 'tofu[125].json': '{}',
+};
+const progressValues=[];
+const partialResult=await storage.restore(partialArchive,value=>progressValues.push(value));
+assert.equal(partialResult.successes.length,1);assert.equal(partialResult.failures.length,1);
+assert.equal(partialResult.successes[0].database,'tofu[125]');assert.equal(accounts.get(125).cookies,undefined);
+assert.equal(progressValues.at(-1),1);
+
 // Exercise popup state rendering with the same status values used by Service.
 async function popupState(status) {
     const items = new Map(['Start', 'Stop'].map(name => [name, {
@@ -165,11 +180,14 @@ async function popupState(status) {
 const stopped = await popupState(1);
 assert.equal(stopped.get('Start').disabled, false);
 assert.equal(stopped.get('Stop').disabled, true);
-for (const status of [2, 3, 4]) {
+for (const status of [2, 4]) {
     const active = await popupState(status);
     assert.equal(active.get('Start').disabled, true);
     assert.equal(active.get('Stop').disabled, false);
 }
+const stopping = await popupState(3);
+assert.equal(stopping.get('Start').disabled, true);
+assert.equal(stopping.get('Stop').disabled, true, 'stopping cannot be submitted again');
 const unknown = await popupState(undefined);
 assert.equal(unknown.get('Start').disabled, true);
 assert.equal(unknown.get('Stop').disabled, true);
@@ -211,7 +229,10 @@ context.XLSX = {utils: {
 }};
 const unused = new vm.SyntheticModule(['default'], function () { this.setExport('default', {}); }, {context});
 const explorer = new vm.SourceTextModule(source('explorer.js').split('\nlet tab = TabPanel.render();')[0] + '\nexport {Exporter, formatRating, SegmentsPanel};', {context});
-await explorer.link(specifier => specifier === './storage.js' ? storageModule : unused);
+const exporterModule = new vm.SourceTextModule(source('exporter.js'), {context});
+await exporterModule.link(() => storageModule);
+await exporterModule.evaluate();
+await explorer.link(specifier => specifier === './storage.js' ? storageModule : specifier === './exporter.js' ? exporterModule : unused);
 await explorer.evaluate();
 const ratings = ['8.25', null, 'unknown', 0].map(value => ({interest: {subject: {rating: {value}}}}));
 const exporter = new explorer.namespace.Exporter();
@@ -223,7 +244,7 @@ assert.equal(explorer.namespace.formatRating({rating: null, null_rating_reason: 
 
 let segmentClick;
 const chain = {
-    parent() { return this; }, removeClass() { return this; }, addClass() { return this; },
+    attr() { return this; }, parent() { return this; }, removeClass() { return this; }, addClass() { return this; },
     off() { return this; }, on(event, callback) { if (typeof callback === 'function') segmentClick = callback; return this; },
 };
 const segments = {querySelector: () => ({classList: classList()})};
@@ -233,6 +254,7 @@ const SegmentTest = class extends explorer.namespace.SegmentsPanel {
     onToggle() {}
     async load() { assert.equal(this.page, 1, 'switching category must restart pagination'); return 1; }
     paging() {}
+    async refresh() { this.total = await this.load(); }
 };
 const segmented = new SegmentTest({querySelector: selector => selector === '.segments.tabs' ? segments : body}, 5, 50);
 await segmentClick({currentTarget: {}});

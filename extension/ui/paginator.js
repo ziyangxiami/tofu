@@ -1,110 +1,54 @@
-'use strict';
-
-const TEMPLATE_PAGINATOR = `\
-<nav class="pagination is-centered" role="navigation">
-  <a class="pagination-previous">上一页</a>
-  <a class="pagination-next">下一页</a>
-  <ul class="pagination-list"></ul>
-</nav>`;
-
-const TEMPLATE_GOTO = `\
-<li>
-    <div class="field has-addons" style="margin: 0.25rem;">
-        <div class="control">
-            <input class="input pagination-goto" type="text" size="1">
-        </div>
-        <div class="control">
-            <a class="button pagination-goto">跳转</a>
-        </div>
-    </div>
-</li>`;
-
-
-/**
- * Class Paginator
- */
 export default class Paginator extends EventTarget {
-    constructor(currentPage, pageCount, padding = 6) {
+    constructor(currentPage, pageCount, padding = 5) {
         super();
-        this.currentPage = currentPage;
-        this.pageCount = pageCount;
+        this.pageCount = Math.max(1, Math.trunc(pageCount) || 1);
+        this.currentPage = Math.max(1, Math.min(this.pageCount, Math.trunc(currentPage) || 1));
         this.padding = padding;
         this.load();
     }
 
+    change(page) {
+        if (!Number.isInteger(page) || page < 1 || page > this.pageCount || page === this.currentPage) return;
+        this.currentPage = page;
+        this.dispatchEvent(new Event('change'));
+    }
+
     load() {
-        let currentPage = this.currentPage;
-        let pageCount = this.pageCount;
-        let padding = this.padding;
-        let $pagination = this.$pagination = $(TEMPLATE_PAGINATOR);
-        let relativeBeginPage = pageCount - parseInt(padding / 2) > currentPage ?
-            currentPage - parseInt(Math.floor((padding - 1) / 2)) : 
-            pageCount - padding + 1;
-        let beginPage = relativeBeginPage > 0 ? relativeBeginPage : 1;
-        let relativeEndPage = beginPage + padding - 1;
-        let endPage = relativeEndPage < pageCount ? relativeEndPage : pageCount;
-        
-        let $paginationList = $pagination.find('.pagination-list');
-        $paginationList.html('');
-        if (currentPage == 1) {
-            $pagination.find('.pagination-previous').attr('disabled', 'disabled');
-            $paginationList.append('<li><a class="pagination-link is-current">1</a></li>');
-        } else {
-            $paginationList.append('<li><a class="pagination-link">1</a></li>');
+        const nav = document.createElement('nav');
+        nav.className = 'pagination is-centered'; nav.setAttribute('aria-label', '备份分页');
+        const button = (text, className, page, disabled = false) => {
+            const node = document.createElement('button');
+            node.type = 'button'; node.className = className; node.textContent = text; node.disabled = disabled;
+            node.addEventListener('click', () => this.change(page)); return node;
+        };
+        nav.append(button('上一页', 'pagination-previous', this.currentPage - 1, this.currentPage === 1));
+        nav.append(button('下一页', 'pagination-next', this.currentPage + 1, this.currentPage === this.pageCount));
+        const list = document.createElement('ul'); list.className = 'pagination-list';
+        const pages = new Set([1, this.pageCount]);
+        for (let page = this.currentPage - 2; page <= this.currentPage + 2; page++) {
+            if (page >= 1 && page <= this.pageCount) pages.add(page);
         }
-        if (beginPage > 2) {
-            $paginationList.append('<li><span class="pagination-ellipsis">&hellip;</span></li>');
-        }
-
-        for (let i = beginPage + 1; i < endPage; i ++) {
-            if (i == currentPage) {
-                $paginationList.append('<li><a class="pagination-link is-current">' + i + '</a></li>');
-            } else {
-                $paginationList.append('<li><a class="pagination-link">' + i + '</a></li>');
+        let previous = 0;
+        for (const page of [...pages].sort((a, b) => a - b)) {
+            if (previous && page - previous > 1) {
+                const gap = document.createElement('li'); gap.innerHTML = '<span class="pagination-ellipsis">…</span>'; list.append(gap);
             }
+            const item = document.createElement('li');
+            const link = button(String(page), 'pagination-link', page);
+            link.setAttribute('aria-label', `第 ${page} 页`);
+            if (page === this.currentPage) { link.classList.add('is-current'); link.setAttribute('aria-current', 'page'); }
+            item.append(link); list.append(item); previous = page;
         }
-        
-        if (endPage <= pageCount - 1) {
-            $paginationList.append('<li><span class="pagination-ellipsis">&hellip;</span></li>');
-        }
-
-        if (currentPage == pageCount) {
-            $pagination.find('.pagination-next').attr('disabled', 'disabled');
-            pageCount > 1 && $paginationList.append('<li><a class="pagination-link is-current">' + pageCount + '</a></li>');
-        } else {
-            pageCount > 1 && $paginationList.append('<li><a class="pagination-link">' + pageCount + '</a></li>');
-        }
-
-        $paginationList.append(TEMPLATE_GOTO);
-
-        $pagination.on('click', '.pagination-link', event => {
-            this.currentPage = parseInt(event.currentTarget.innerText);
-            this.dispatchEvent(new Event('change'));
-        });
-
-        $pagination.on('click', '.pagination-previous', event => {
-            let currentPage = parseInt($pagination.find('.pagination-link.is-current').text());
-            if (isNaN(currentPage) || currentPage == 1) return false;
-            this.currentPage =  currentPage - 1;
-            this.dispatchEvent(new Event('change'));
-        });
-
-        $pagination.on('click', '.pagination-next', event => {
-            let currentPage = parseInt($pagination.find('.pagination-link.is-current').text());
-            if (isNaN(currentPage) || currentPage == endPage) return false;
-            this.currentPage = currentPage + 1;
-            this.dispatchEvent(new Event('change'));
-        });
-
-        $pagination.on('click', '.button.pagination-goto', event => {
-            let currentPage = parseInt($pagination.find('.input.pagination-goto').val());
-            if (isNaN(currentPage) || currentPage < 1 || currentPage > pageCount) return false;
-            this.currentPage = currentPage;
-            this.dispatchEvent(new Event('change'));
-        });
+        nav.append(list);
+        const form = document.createElement('form'); form.className = 'pagination-jump';
+        const input = document.createElement('input'); input.className = 'input pagination-goto';
+        input.type = 'number'; input.min = '1'; input.max = String(this.pageCount); input.required = true;
+        input.setAttribute('aria-label', `跳转页码，1 至 ${this.pageCount}`);
+        input.placeholder = `${this.currentPage} / ${this.pageCount}`;
+        const submit = document.createElement('button'); submit.className = 'button'; submit.textContent = '跳转';
+        form.append(input, submit); form.addEventListener('submit', event => { event.preventDefault(); this.change(Number(input.value)); });
+        nav.append(form); this.element = nav;
     }
 
-    appendTo(node) {
-        this.$pagination.appendTo(node);
-    }
+    appendTo(node) { (node instanceof Element ? node : node[0]).append(this.element); }
 }

@@ -39,57 +39,75 @@ export default class Doulist extends Task {
         return true;
     }
 
+    async fetchListPage(url, type, start) {
+        // Retry the same read once when HTTP 200 contradicts itself. Do not
+        // skip the missing page or publish a partial snapshot as successful.
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            const fetch = await this.fetch;
+            const response = await fetch(url, {headers: {'X-Override-Referer': 'https://m.douban.com/mine/doulist'}});
+            if (response.status !== 200) {
+                await recordDiagnostic(this.diagnosticRunId, 'doulist.api', {
+                    task: 'Doulist', listType: type, status: response.status,
+                    pages: start / PAGE_SIZE + 1, attempt, reason: 'http_error',
+                });
+                throw new TaskError('豆瓣服务器返回错误');
+            }
+            const json = await response.json();
+            if (!json || json.code || !Array.isArray(json.doulists)) {
+                await recordDiagnostic(this.diagnosticRunId, 'doulist.api', {
+                    task: 'Doulist', listType: type, status: response.status,
+                    pages: start / PAGE_SIZE + 1, attempt, reason: 'invalid_response',
+                });
+                throw new TaskError('豆列接口响应格式错误');
+            }
+            const totalText = String(json.total ?? '');
+            const total = /^\d+$/.test(totalText) ? Number(totalText) : NaN;
+            const validTotal = Number.isSafeInteger(total) && total >= 0;
+            const emptyPage = validTotal && start < total && json.doulists.length === 0;
+            await recordDiagnostic(this.diagnosticRunId, 'doulist.api', {
+                task: 'Doulist', listType: type, status: response.status,
+                pages: start / PAGE_SIZE + 1, attempt,
+                apiTotal: validTotal ? total : undefined, apiGroups: json.doulists.length,
+                reason: emptyPage ? 'empty_response' :
+                    (!validTotal || (total === 0 && json.doulists.length > 0) ? 'invalid_response' : undefined),
+            });
+            if (!validTotal || (total === 0 && json.doulists.length > 0)) {
+                throw new TaskError('豆列接口未返回有效总数或分页内容');
+            }
+            if (!emptyPage) return {json, total};
+            if (attempt === 2) {
+                throw new TaskError(`豆列接口显示共有 ${total} 个，但第 ${start / PAGE_SIZE + 1} 页连续两次为空，已保留旧备份，请稍后重试`);
+            }
+        }
+    }
+
     async run() {
         let version = this.jobId;
         this.missingTags = 0;
         let invalidListIds = 0;
         let invalidItemIds = 0;
-        let ownedCount = this.targetUser.owned_doulist_count || 0;
-        let followingCount = this.targetUser.following_doulist_count || 0;
-        this.total = ownedCount + followingCount;
+        const profileCount = value => Number.isSafeInteger(Number(value)) && Number(value) >= 0 ? Number(value) : 0;
+        const totals = {
+            owned: profileCount(this.targetUser.owned_doulist_count),
+            following: profileCount(this.targetUser.following_doulist_count),
+        };
+        this.total = totals.owned + totals.following;
         if (this.total === 0) {
             // Default to 1 to allow checking via API in case count properties are absent in targetUser
             this.total = 1;
         }
 
         let baseURL = URL_DOULIST
-            .replace('{ck}', this.session.cookies.ck)
+            .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
         for (let type of ['owned', 'following']) {
             let urlWithType = baseURL.replace('{type}', type);
             let pageCount = 1;
             for (let i = 0; i < pageCount; i ++) {
-                let fetch = await this.fetch
-                let response = await fetch(urlWithType.replace('{start}', i * PAGE_SIZE), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/doulist'}});
-                if (response.status != 200) {
-                    await recordDiagnostic(this.diagnosticRunId, 'doulist.api', {
-                        task: 'Doulist', listType: type, status: response.status,
-                        reason: 'http_error',
-                    });
-                    throw new TaskError('豆瓣服务器返回错误');
-                }
-                let json = await response.json();
-                if (i === 0) {
-                    await recordDiagnostic(this.diagnosticRunId, 'doulist.api', {
-                        task: 'Doulist', listType: type, status: response.status,
-                        apiTotal: Number.isSafeInteger(json?.total) ? json.total : undefined,
-                        apiGroups: Array.isArray(json?.doulists) ? json.doulists.length : 0,
-                    });
-                }
-                if (!json || json.code || !Array.isArray(json.doulists)) {
-                    await recordDiagnostic(this.diagnosticRunId, 'doulist.api', {
-                        task: 'Doulist', listType: type, reason: 'invalid_response',
-                    });
-                    throw new TaskError('豆列接口响应格式错误');
-                }
-                const totalText = String(json.total ?? '');
-                const total = /^\d+$/.test(totalText) ? Number(totalText) : NaN;
-                if (!Number.isSafeInteger(total) || total < 0 ||
-                    (i * PAGE_SIZE < total && json.doulists.length === 0)) {
-                    throw new TaskError('豆列接口未返回有效总数或分页内容');
-                }
-                this.total = Math.max(this.total, total);
+                const {json, total} = await this.fetchListPage(urlWithType.replace('{start}', i * PAGE_SIZE), type, i * PAGE_SIZE);
+                totals[type] = total;
+                this.total = totals.owned + totals.following;
                 pageCount = Math.ceil(total / PAGE_SIZE);
                 for (let doulist of json.doulists) {
                     let doulistId = this.doulistId(doulist);

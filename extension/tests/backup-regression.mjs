@@ -300,6 +300,14 @@ await recordDiagnostic('run-annotation', 'task.finished', {
 await recordDiagnostic('run-annotation', 'task.finished', {
     task: 'Doulist', outcome: 'failed', errorType: 'DataError',
 });
+await recordDiagnostic('run-validation', 'photo.invalid_id', {
+    task: 'Photo', idType: 'string', pages: 1,
+    id: 'secret-cookie', url: 'https://secret.example/', body: 'private backup content',
+});
+await recordDiagnostic('run-validation', 'doulist.api', {
+    task: 'Doulist', listType: 'owned', reason: 'empty_response',
+    pages: 1, attempt: 2, apiTotal: 55, apiGroups: 0,
+});
 const report = await getDiagnosticReport();
 assert(report.entries.some(entry => entry.event === 'doulist.missing_tags' && entry.count === 1));
 assert(report.entries.some(entry => entry.event === 'doulist.api' && entry.listType === 'owned' && entry.apiGroups === 1));
@@ -311,6 +319,8 @@ assert(report.entries.some(entry => entry.event === 'annotation.page' && entry.p
 assert(report.entries.some(entry => entry.event === 'task.skipped' && entry.task === 'Annotation'));
 assert(report.entries.some(entry => entry.errorType === 'DataError'));
 assert(report.entries.some(entry => entry.errorLocation === 'tasks/doulist.js:14'));
+assert(report.entries.some(entry => entry.event === 'photo.invalid_id' && entry.idType === 'string' && entry.pages === 1));
+assert(report.entries.some(entry => entry.event === 'doulist.api' && entry.attempt === 2 && entry.pages === 1 && entry.apiTotal === 55 && entry.apiGroups === 0));
 const exported = JSON.stringify(report);
 assert(!exported.includes('secret-cookie'));
 assert(!exported.includes('private backup content'));

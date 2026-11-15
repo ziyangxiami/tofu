@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 
 <head>
     <meta charset="UTF-8">
@@ -18,22 +18,23 @@
             max-width: 50rem;
         }
     </style>
+    <link rel="stylesheet" href="ui/app.css">
 </head>
 
-<body>
+<body class="backup-page">
     <nav class="navbar">
         <div class="container">
             <div class="navbar-brand">
-                <a class="navbar-item" href="https://doufen.org/" target="_blank">
-                    <img src="images/logo-main.png" alt="豆伴" title="豆伴">
+                <a class="navbar-item" href="backup.html" aria-label="豆伴备份首页">
+                    <img src="images/icon-48x48.png" alt=""><span class="brand-name">豆伴</span><span class="brand-note">我的豆瓣档案</span>
                 </a>
-                <a role="button" class="navbar-burger">
+                <button type="button" class="navbar-burger" aria-label="展开导航" aria-expanded="false">
                     <span aria-hidden="true"></span>
                     <span aria-hidden="true"></span>
                     <span aria-hidden="true"></span>
-                </a>
+                </button>
             </div>
-            <div class="navbar-menu">
+            <div class="navbar-menu" id="main-navigation">
                 <div class="navbar-end">
                     <div class="navbar-item">
                         <div class="buttons">
@@ -69,32 +70,17 @@
     <script src="./ui/navbar.js"></script>
 
     <section class="section">
-        <div class="container thin" style="margin: 1rem auto;">
-            <div class="level">
-                <div class="level-left">
-                    <div class="level-item">
-                        <button class="button is-link" id="new-task">
-                            <span class="icon">
-                                <i class="fas fa-plus"></i>
-                            </span>
-                            <span>新建任务</span>
-                        </button>
-                    </div>
-                </div>
-                <div class="level-right">
-                    <div class="level-item">
-                        <button class="button" id="reload">
-                            <span class="icon">
-                                <i class="fas fa-sync"></i>
-                            </span>
-                            <span>刷新</span>
-                        </button>
-                    </div>
-                </div>
+        <div class="container thin">
+            <header class="page-heading"><div><p class="eyebrow">YOUR PERSONAL ARCHIVE</p><h1>把喜欢的，留在身边。</h1><p class="description">收藏、文字和来往，都有一份自己的存档。<br>从一次备份开始，随时回来翻阅。</p></div><div class="heading-aside"><a href="options.html#service" class="button is-light">查看任务中心 →</a></div></header>
+            <div class="stat-grid">
+                <div class="stat-card featured"><div class="stat-label">已存档账号</div><div class="stat-value" id="account-count">—</div><div class="stat-note">保存在这台浏览器中</div></div>
+                <div class="stat-card"><div class="stat-label">最近一次更新</div><div class="stat-value" id="latest-backup">—</div><div class="stat-note">以成功保存的数据为准</div></div>
+                <div class="stat-card"><div class="stat-label">带走你的档案</div><div class="stat-value" style="font-size:1.25rem">随时导出 · 随时翻阅</div><div class="stat-note">数据库存档 / Excel 数据表</div></div>
             </div>
+            <div class="toolbar"><div class="toolbar-label">我的备份</div><input id="account-search" class="input search" type="search" aria-label="搜索备份账号" placeholder="搜索昵称或豆瓣 ID"><div class="buttons"><button class="button" id="reload" aria-label="刷新备份列表"><i class="fas fa-sync" aria-hidden="true"></i></button><button class="button is-link" id="new-task">＋ 新建备份</button></div></div>
         </div>
         <div class="container thin" id="accounts">
-            <!-- accounts -->
+            <p class="state-message" role="status">正在读取本地档案…</p>
         </div>
     </section>
 
@@ -102,10 +88,11 @@
         <div class="modal-background"></div>
         <div class="modal-card">
             <header class="modal-card-head">
-                <p class="modal-card-title">新建任务</p>
+                <p class="modal-card-title">创建一份新备份</p>
                 <button class="delete cancel"></button>
             </header>
             <section class="modal-card-body">
+                <p class="setting-description">默认备份当前登录的豆瓣账号。选择项目后，任务会在后台开始。</p>
                 <div class="level">
                     <div class="level-left">
                         <div class="level-item">
@@ -227,13 +214,13 @@
                     </div>
                     <div class="field">
                         <p class="control">
-                            <input type="text" class="input" name="user-homepage" placeholder="输入用户主页。例如：https://www.douban.com/people/doufen-org/" disabled>
+                            <label class="help" for="user-homepage">用户主页地址</label><input id="user-homepage" type="url" class="input" name="user-homepage" placeholder="输入用户主页。例如：https://www.douban.com/people/doufen-org/" disabled>
                         </p>
                     </div>
                     <div class="field">
                         <div class="control">
                             <label class="checkbox">
-                                <input type="checkbox" name="advanced-task" value="Files"> 同步相册、日记、评论以及广播中的图片至 <a href="https://cloudinary.com/" target="_blank">Cloudinary</a>
+                                <input type="checkbox" name="advanced-task" value="Files"> 同步相册、日记、评论以及广播中的图片至 <a href="https://cloudinary.com/" target="_blank" rel="noopener noreferrer">Cloudinary</a>
                             </label>
                         </div>
                     </div>
@@ -243,9 +230,10 @@
                         <i class="fas fa-exclamation-triangle"></i>
                     </span>
                     <span class="is-size-6 has-text-danger">警告：</span>有部分用户报告，在备份过程中可能会触发豆瓣的反爬虫保护机制，从而导致当前账号被锁定。解锁操作需要使用注册手机发送短信。如果你无法执行解锁操作，请谨慎使用。</p>
+                <p id="task-error" class="inline-error is-hidden" role="alert"></p>
             </section>
             <footer class="modal-card-foot">
-                <button class="button new is-link">新建</button>
+                <span class="selection-count" aria-live="polite"></span><button class="button new is-link">开始备份</button>
                 <button class="button cancel">取消</button>
             </footer>
         </div>

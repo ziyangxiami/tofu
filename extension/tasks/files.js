@@ -1,11 +1,10 @@
 'use strict';
-import Settings from '../settings.js';
+import Settings, {TASK_FILES_SETTINGS} from '../settings.js';
+export {TASK_FILES_SETTINGS} from '../settings.js';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
 
-export const TASK_FILES_SETTINGS = {
-    '同步图片.cloudName': '',
-};
+
 
 const UPLOAD_URL = 'https://api.cloudinary.com/v1_1/{cloud}/image/upload';
 const PAGE_SIZE = 100;

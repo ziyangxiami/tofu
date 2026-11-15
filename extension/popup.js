@@ -27,6 +27,8 @@ class PopupMenu {
         await this.service.stop();
     }
 
+    clickTasks() { window.open(URL_OPTIONS + '#service'); }
+
     clickSettings(event) {
         window.open(URL_OPTIONS);
     }
@@ -36,7 +38,6 @@ class PopupMenu {
     }
 
     clickAbout(event) {
-        console.log("clickAbout");
         window.open(URL_ABOUT);
     }
 
@@ -58,36 +59,37 @@ class PopupMenu {
         let service = ServiceProxy.getProxy();
         let menu = new PopupMenu('.menu', service);
 
-        let status;
-        try {
-            status = await service.getProperty('status');
-        } catch (e) {
-            console.error('Failed to get status:', e);
-        }
-
-        // Service.STATE_STOPPED = 1; pending/running states are 2, 3 and 4.
-        if (status === 1) {
-            menu.enable('Start');
-            menu.disable('Stop');
-        } else if ([2, 3, 4].includes(status)) {
-            menu.disable('Start');
-            menu.enable('Stop');
-        } else {
-            menu.disable('Start');
-            menu.disable('Stop');
-        }
+        menu.refresh = async () => {
+            let status;
+            try { status = await service.getProperty('status'); } catch (_) {}
+            menu.disable('Start'); menu.disable('Stop');
+            if (status === 1) menu.enable('Start');
+            else if ([2, 4].includes(status)) menu.enable('Stop');
+            const label = document.querySelector('#popup-state');
+            if (label) label.textContent = ({1: '服务已停止', 2: '等待新任务', 3: '正在停止', 4: '正在备份'})[status] || '后台暂时无法连接';
+        };
+        await menu.refresh();
+        service.addEventListener?.('statechange', () => menu.refresh());
+        service.addEventListener?.('disconnect', () => {
+            menu.disable('Start'); menu.disable('Stop');
+            const label = document.querySelector('#popup-state');
+            if (label) label.textContent = '后台连接已断开';
+        });
 
         // 绑定点击事件
         Zepto('.menu').on('click', '.menu-item', async event => {
-            console.log('Button clicked:', event.currentTarget.getAttribute('name'));
-            if (event.currentTarget.hasAttribute('disabled')) return false;
+            if (menu.busy || event.currentTarget.hasAttribute('disabled')) return false;
             let handle = menu['click' + event.currentTarget.getAttribute('name')];
             if (!handle) return false;
+            menu.busy = true;
             try {
                 await handle.apply(menu, [event]);
             } catch (e) {
-                console.error(e);
-            }
+                const error = document.querySelector('#popup-error');
+                if (error) { error.hidden = false; error.textContent = e.message || String(e); }
+                return;
+            } finally { menu.busy = false; }
+            if (['Start', 'Stop'].includes(event.currentTarget.getAttribute('name'))) { await menu.refresh(); return; }
             setTimeout(() => {
                 window.close();
             }, 100);

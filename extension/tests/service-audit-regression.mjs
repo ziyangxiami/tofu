@@ -51,7 +51,7 @@ const queueModule = new vm.SourceTextModule(source('services/AsyncBlockingQueue.
 const eventModule = new vm.SourceTextModule(source('services/StateChangeEvent.js'), {context});
 const loggerModule = new vm.SourceTextModule(source('services/Logger.js'), {context});
 const defaults = synthetic({default: FakeTask});
-const settings = synthetic({default: {load: async () => ({}), apply() {}}});
+const settings = synthetic({default: {load: async () => ({}), apply() {}}, SERVICE_SETTINGS: {}});
 const job = synthetic({default: FakeJob});
 const diagnostics = synthetic({recordDiagnostic: async () => {}});
 const migrationHelpers = synthetic({validId: value => Number(value)});
@@ -199,3 +199,25 @@ assert(dnrCalls[0].removeRuleIds.includes(101));
 assert(dnrCalls[0].addRules.some(rule => rule.id === 101));
 assert(logs.some(args => args[0] === 'declarativeNetRequest error:'));
 console.log('Service audit regression tests passed (startup, ports, RPC, job validation, safe retries, DNR).');
+
+// A database maintenance lease excludes task starts and enqueue operations.
+let lockHeld = true;
+context.navigator = {locks: {request: async (name, options, operation) => {
+    assert.equal(name, 'tofu-database-maintenance'); assert.equal(options.ifAvailable, true);
+    return operation(lockHeld ? null : {name});
+}}};
+await assert.rejects(service1.start(), /数据库正在/);
+const beforeLockedQueue = service1._jobQueue.length;
+await assert.rejects(service1.createJob(null, null, [{name:'Note'}]), /数据库正在/);
+assert.equal(service1._jobQueue.length, beforeLockedQueue);
+lockHeld = false;
+assert.equal(await Service.withDatabaseLock(() => 'available'), 'available');
+console.log('Database maintenance exclusion passed.');
+
+// RPC must not expose private methods that bypass the maintenance lock.
+for (const method of ['_start','_createJob','restoreState','constructor']) {
+    const replies=[];
+    await service1.onMessage({postMessage:value=>replies.push(value)}, {type:'syscall',id:method,method,args:[]});
+    assert.match(replies[0].error,/不支持的后台操作/);
+}
+console.log('RPC public-operation allowlist passed.');

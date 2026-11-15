@@ -30,13 +30,34 @@ export function totalCount(json) {
     return count;
 }
 
-export function htmlPageCount(html) {
+export function htmlPageCount(html, expectedPage) {
     const current = html.querySelector('.paginator .thispage');
-    if (!current) return 1;
-    const raw = String(current.dataset?.totalPage ?? current.getAttribute('data-total-page') ?? '');
-    const count = /^\d+$/.test(raw) ? Number(raw) : NaN;
-    if (!Number.isSafeInteger(count) || count <= 0) {
-        throw new TaskError('豆瓣分页信息无效，已保存此前内容');
+    const paginator = html.querySelector('.paginator');
+    if (!current && !paginator) return 1;
+    const positive = value => {
+        const text = String(value ?? '').trim();
+        const number = /^\d+$/.test(text) ? Number(text) : NaN;
+        return Number.isSafeInteger(number) && number > 0 ? number : null;
+    };
+    const currentPage = positive(current?.textContent);
+    if (expectedPage !== undefined && currentPage !== null && currentPage !== expectedPage) {
+        throw new TaskError('豆瓣返回的页码与请求不一致，已保留旧备份');
     }
-    return count;
+    const count = positive(current?.getAttribute('data-total-page') ?? current?.dataset?.totalPage);
+    if (count !== null && (currentPage === null || count >= currentPage)) return count;
+
+    // A paginator can render numbered links and a next link without a total
+    // attribute. Use that evidence instead of assuming one page.
+    if (currentPage !== null && paginator) {
+        const pages = [currentPage];
+        for (const link of paginator.querySelectorAll('a')) {
+            const page = positive(link.textContent);
+            if (page !== null) pages.push(page);
+        }
+        const next = paginator.querySelector('.next a');
+        if (next?.getAttribute('href')) pages.push(currentPage + 1);
+        const last = Math.max(...pages);
+        if (Number.isSafeInteger(last)) return last;
+    }
+    throw new TaskError('豆瓣分页信息无效，已保留旧备份');
 }

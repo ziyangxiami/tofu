@@ -2,6 +2,7 @@
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
 import {numericId, validatePage, htmlPageCount} from './_validation.js';
+import {recordDiagnostic} from '../services/diagnostics.js';
 
 
 const PAGE_SIZE = 50;
@@ -9,6 +10,23 @@ const URL_PHOTOS = 'https://m.douban.com/rexxar/api/v2/user/{uid}/photo_albums?s
 
 
 export default class Photo extends Task {
+    resolveAlbumId(album) {
+        try {
+            return {id: numericId(album?.id, '相册'), source: 'id'};
+        } catch (error) {
+            // A canonical album URL is another explicit ID source. Never use
+            // parseInt on arbitrary text or invent an ID for a special album.
+            let url;
+            try { url = new URL(album?.url); } catch (error) { /* invalid URL */ }
+            if (url && ['https:', 'http:'].includes(url.protocol) &&
+                ['www.douban.com', 'douban.com'].includes(url.hostname)) {
+                const match = url.pathname.match(/^\/photos\/album\/(\d+)\/?$/);
+                if (match) return {id: numericId(match[1], '相册'), source: 'url'};
+            }
+            throw new TaskError('相册缺少有效 ID，且无法从相册网址恢复，已保留旧备份');
+        }
+    }
+
     compareAlbum(l, r) {
         if (l.description != r.description) return false;
         return true;
@@ -37,6 +55,7 @@ export default class Photo extends Task {
             .replace('{ck}', this.session?.cookies?.ck || '');
 
         let pageCount = 1;
+        const albumIds = new Set();
         for (let i = 0; i < pageCount; i ++) {
             let fetch = await this.fetch
             let response = await fetch(baseURL.replace('{start}', i * PAGE_SIZE), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/photos'}});
@@ -47,7 +66,24 @@ export default class Photo extends Task {
             this.total = validatePage(json, 'photo_albums', i * PAGE_SIZE);
             pageCount = Math.ceil(this.total / PAGE_SIZE);
             for (let album of json.photo_albums) {
-                let albumId = numericId(album.id, '相册');
+                let resolved;
+                try {
+                    resolved = this.resolveAlbumId(album);
+                } catch (error) {
+                    await recordDiagnostic(this.diagnosticRunId, 'photo.invalid_id', {
+                        task: 'Photo', pages: i + 1, count: this.completion,
+                        idType: album?.id == null ? 'missing' : typeof album.id,
+                    });
+                    throw error;
+                }
+                const albumId = resolved.id;
+                if (albumIds.has(albumId)) throw new TaskError('相册分页返回重复 ID，已保留旧备份');
+                albumIds.add(albumId);
+                if (resolved.source === 'url') {
+                    await recordDiagnostic(this.diagnosticRunId, 'photo.id_recovered', {
+                        task: 'Photo', pages: i + 1, count: 1,
+                    });
+                }
                 let albumPrivacy = album.privacy;
                 let albumRow = await this.storage.album.get(albumId);
                 if (albumRow) {
@@ -76,8 +112,12 @@ export default class Photo extends Task {
                         throw new TaskError('豆瓣服务器返回错误');
                     }
                     let html = this.parseHTML(await response.text());
-                    albumTotalPage = htmlPageCount(html);
-                    for (let photoAnchor of html.querySelectorAll('.photolst_photo')) {
+                    albumTotalPage = htmlPageCount(html, i + 1);
+                    const photos = html.querySelectorAll('.photolst_photo');
+                    if (photos.length === 0 && (i > 0 || albumTotalPage > 1)) {
+                        throw new TaskError('相册分页未返回照片，已保留旧备份');
+                    }
+                    for (let photoAnchor of photos) {
                         let photoHref = photoAnchor.getAttribute('href') || '';
                         let match = photoHref.match(/https:\/\/www\.douban\.com\/photos\/photo\/(\d+)\//);
                         if (!match) continue;

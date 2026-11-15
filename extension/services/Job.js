@@ -175,6 +175,7 @@ export default class Job extends EventTarget {
     async _run() {
         let logger = this._service.logger
         this._failedTasks = [];
+        this._errorMessage = null;
         const isMigration = this._tasks.some(task => task.isMigration);
         if (isMigration && (this._isOffline || this._tasks.some(task => !task.isMigration))) {
             throw new TaskError('迁移必须在线单独运行，不能与备份任务混合。');
@@ -228,7 +229,8 @@ export default class Job extends EventTarget {
                 const previous = await storage.global.account.get({userId});
                 // Login time is not a successful backup time. First failures
                 // have no completion timestamp; migrations create no target card.
-                await storage.global.account.put({...account, updated: previous?.updated || null});
+                const {cookies, ...profile} = account;
+                await storage.global.account.put({...profile, updated: previous?.updated || null});
             }
             logger.debug('Create the account');
             if (jobId === null || jobId === undefined) {
@@ -442,6 +444,8 @@ export default class Job extends EventTarget {
             diagnosticRunId: this._diagnosticRunId,
             completedTaskTypes: this._completedTaskTypes,
             emptyTasks: this._emptyTasks,
+            failedTasks: this._failedTasks || [],
+            error: this._errorMessage || null,
         };
     }
 
@@ -460,6 +464,7 @@ export default class Job extends EventTarget {
         job._isRunning = json._isRunning;
         job._diagnosticRunId = json.diagnosticRunId || job._diagnosticRunId;
         job._completedTaskTypes = Array.isArray(json.completedTaskTypes) ? json.completedTaskTypes : [];
+        job._errorMessage = json.error || null;
         job._emptyTasks = Array.isArray(json.emptyTasks) ? json.emptyTasks : [];
         job._currentTask = json._currentTask ? taskFromJSON(json._currentTask, fetch, service.logger, storage) : null;
 
