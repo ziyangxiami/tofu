@@ -518,4 +518,103 @@ await check('doulist: a confirmed empty account finishes at zero rather than the
     assert.equal(task.total, 0);
     assert.equal(task.completion, 0);
 });
+await check('following/note/review advance by server-capped count without skipping or inflating progress', async () => {
+    const starts = [];
+    const following = await setup('following', async url => {
+        const start = Number(new URL(url).searchParams.get('start'));
+        starts.push(start);
+        const all = Array.from({length: 10}, (_, i) => ({id: i + 1}));
+        return json({start, count: 7, total: 10, users: all.slice(start, start + 7)});
+    });
+    await following.task.run();
+    assert.deepEqual(starts, [0, 7]);
+    assert.equal(following.db.following.rows.size, 10);
+    assert.equal(following.task.completion, 10);
+
+    const noteStarts = [];
+    const note = await setup('note', async url => {
+        if (!url.includes('/rexxar/')) return html('<div id="link-report"><div class="note">Body</div></div>');
+        const start = Number(new URL(url).searchParams.get('start'));
+        noteStarts.push(start);
+        const all = Array.from({length: 10}, (_, i) => ({id: i + 1, url: `https://www.douban.com/note/${i + 1}/`}));
+        return json({start, count: 7, total: 10, notes: all.slice(start, start + 7)});
+    });
+    await note.task.run();
+    assert.deepEqual(noteStarts, [0, 7]);
+    assert.equal(note.db.note.rows.size, 10);
+
+    const reviewStarts = [];
+    const review = await setup('review', async url => {
+        if (!url.includes('/rexxar/')) return html('<div class="review-content">Review body</div>');
+        const parsed = new URL(url);
+        if (parsed.searchParams.get('type') !== 'book') return json({start: 0, count: 50, total: 0, reviews: []});
+        const start = Number(parsed.searchParams.get('start'));
+        reviewStarts.push(start);
+        const all = Array.from({length: 10}, (_, i) => ({id: i + 1, url: `https://book.douban.com/review/${i + 1}/`}));
+        return json({start, count: 7, total: 10, reviews: all.slice(start, start + 7)});
+    });
+    await review.task.run();
+    assert.deepEqual(reviewStarts, [0, 7]);
+    assert.equal(review.db.review.rows.size, 10);
+
+    const reviewChanged = await setup('review', async url => {
+        const parsed = new URL(url);
+        if (parsed.searchParams.get('type') !== 'book') return json({start: 0, count: 50, total: 0, reviews: []});
+        const start = Number(parsed.searchParams.get('start'));
+        return start === 0 ?
+            json({start: 0, count: 50, total: 51, reviews: Array.from({length: 50}, (_, i) => ({id: i + 1, url: `https://book.douban.com/review/${i + 1}/`}))}) :
+            json({start: 50, count: 50, total: 52, reviews: [{id: 51, url: 'https://book.douban.com/review/51/'}]});
+    });
+    reviewChanged.task.fetchReview = async () => 'body';
+    await assert.rejects(() => reviewChanged.task.run(), /评论总数发生变化/);
+});
+await check('board/annotation reject login challenge forms and sec.douban.com redirect URLs', async () => {
+    const parser = await load('services/html_parser.js');
+    const parse = parser.namespace.default;
+    const board = await setup('board', async () => html('<form name="login"><input name="form_email"></form>'),
+        storage([{table: 'board', version: 1, lastId: 5}]));
+    board.task.parseHTML = parse;
+    await assert.rejects(() => board.task.run(), /登录或安全验证/);
+    assert.equal((await board.db.version.get('board')).lastId, 5);
+
+    const annotation = await setup('annotation', async url => url.includes('/rexxar/') ?
+        json({total: 0, collections: []}) : {status: 200, url: 'https://sec.douban.com/a', text: async () => '<html><body>Verify</body></html>'},
+        storage([{table: 'annotation', version: 1}]));
+    annotation.task.parseHTML = parse;
+    await assert.rejects(() => annotation.task.run(), /登录或安全验证/);
+    assert.equal((await annotation.db.version.get('annotation')).version, 1);
+
+    const doulistMissingPag = await setup('doulist', async url => {
+        if (url.includes('/owned_doulists')) return json({total: 1, doulists: [{id: 10, url: 'https://www.douban.com/doulist/10/'}]});
+        if (url.includes('/following_doulists')) return json({total: 0, doulists: []});
+        return url.includes('start=0') ?
+            html('<div class="paginator"><span class="thispage" data-total-page="2">1</span></div>') :
+            html('<div>truncated page 2</div>');
+    }, storage([{table: 'doulist', version: 1}]));
+    doulistMissingPag.task.parseHTML = parse;
+    await assert.rejects(() => doulistMissingPag.task.run(), /分页信息缺失/);
+    assert.equal((await doulistMissingPag.db.version.get('doulist')).version, 1);
+
+    const doulistMissingBd = await setup('doulist', async url => {
+        if (url.includes('/owned_doulists')) return json({total: 1, doulists: [{id: 10, url: 'https://www.douban.com/doulist/10/'}]});
+        if (url.includes('/following_doulists')) return json({total: 0, doulists: []});
+        return html('<div class="doulist-item" id="item101"><a class="lnk-doulist-add" data-id="101"></a></div>');
+    }, storage([{table: 'doulist', version: 1}]));
+    doulistMissingBd.task.parseHTML = parse;
+    await assert.rejects(() => doulistMissingBd.task.run(), /部分豆列缺少有效 ID/);
+});
+await check('validation rejects /misc/sorry redirects and 禁止访问 captcha pages as rate-limited challenges', async () => {
+    const parser = await load('services/html_parser.js');
+    const parse = parser.namespace.default;
+    const {assertNotChallengePage} = await load('tasks/_validation.js').then(m => m.namespace);
+    assert.throws(
+        () => assertNotChallengePage(parse('<html><body>ok</body></html>'), '影视标记公开页面',
+            'https://www.douban.com/misc/sorry?original-url=https%3A%2F%2Fmovie.douban.com%2F'),
+        err => err.httpStatus === 429 && /访问限制/.test(err.message) && /登录或安全验证/.test(err.message)
+    );
+    assert.throws(
+        () => assertNotChallengePage(parse('<html><head><title>禁止访问</title></head><body><form action="/misc/sorry"><input name="captcha-id"></form></body></html>'), '图书标记公开页面'),
+        err => err.httpStatus === 429 && /访问限制/.test(err.message)
+    );
+});
 console.log(`task audit regression: ${checks} passed`);

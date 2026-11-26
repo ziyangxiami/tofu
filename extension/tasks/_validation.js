@@ -61,3 +61,55 @@ export function htmlPageCount(html, expectedPage) {
     }
     throw new TaskError('豆瓣分页信息无效，已保留旧备份');
 }
+
+export function pageStep(json, requestedStart, requestedCount, total) {
+    const pageSize = json?.count === undefined ? requestedCount : Number(json.count);
+    if (!Number.isSafeInteger(pageSize) || pageSize < 0 || (pageSize === 0 && total > 0) || pageSize > requestedCount ||
+        (json?.start !== undefined && Number(json.start) !== requestedStart)) {
+        throw new TaskError('豆瓣接口响应格式错误或分页位置异常');
+    }
+    return pageSize || requestedCount;
+}
+
+export function assertNotChallengePage(html, label = '页面', responseUrl = '') {
+    const rateLimitError = () => {
+        const error = new TaskError(`${label}触发豆瓣访问限制，需要登录或安全验证（请在浏览器打开豆瓣完成验证或稍后重试），已保留旧备份`);
+        error.httpStatus = 429;
+        return error;
+    };
+    const authError = () => {
+        const error = new TaskError(`${label}需要登录或安全验证，已保留旧备份`);
+        error.httpStatus = 401;
+        return error;
+    };
+    if (responseUrl) {
+        try {
+            const url = new URL(responseUrl);
+            if (!(url.hostname === 'douban.com' || url.hostname.endsWith('.douban.com')) ||
+                url.hostname === 'accounts.douban.com' ||
+                /\/(?:login|passport)(?:\/|$)/i.test(url.pathname)) {
+                throw authError();
+            }
+            if (url.hostname === 'sec.douban.com' ||
+                /\/(?:captcha|challenge)(?:\/|$)/i.test(url.pathname) ||
+                /\/misc\/sorry(?:\/|$)/i.test(url.pathname) ||
+                (/\/misc\//i.test(url.pathname) && url.searchParams.has('original-url'))) {
+                throw rateLimitError();
+            }
+        } catch (error) {
+            if (error instanceof TaskError) throw error;
+        }
+    }
+    if (!html) return;
+    if (html.querySelector('form[action*="/misc/sorry"]') || html.querySelector('#captcha_image') ||
+        html.querySelector('input[name="captcha-solution"]') || html.querySelector('input[name="captcha-id"]')) {
+        throw rateLimitError();
+    }
+    const title = html.querySelector('title')?.textContent?.trim() || '';
+    if (/禁止访问|安全验证|豆瓣验证|人机验证/.test(title)) {
+        throw rateLimitError();
+    }
+    if (html.querySelector('form[name="login"]') || html.querySelector('input[name="form_email"]')) {
+        throw authError();
+    }
+}

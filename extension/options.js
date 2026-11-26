@@ -171,6 +171,7 @@ class GeneralPanel {
         const CONTROL_METAS = [
             //{name: 'assistant.enable', type: BoolSwitch},
             {name: 'service.debug', type: BoolSwitch},
+            {name: 'service.adaptivePacing', type: BoolSwitch},
             {name: 'service.requestInterval', type: TimeInput},
             {name: '同步图片.cloudName', type: TextInput},
         ];
@@ -241,12 +242,14 @@ export default class ServicePanel {
         this.$start = $panel.find('.service-ctrl[name="start"]');
         this.$stop = $panel.find('.service-ctrl[name="stop"]');
         this.$loading = $panel.find('.service-ctrl[name="loading"]');
+        this.$cancel = $panel.find('[name="cancel-job"]');
         this.$logs = $panel.find('.logs');
         this.$job = $panel.find('.job');
         this.progressList = new TaskProgressList(this.$job[0]);
         this.refreshError = this.panel.querySelector('.service-refresh-error');
         this.refreshQueued = false;
         this.refreshPromise = null;
+        this.lastStatus = null;
         $panel.find('[name="download-diagnostics"]').click(async event => {
             const button = event.currentTarget;
             button.disabled = true;
@@ -269,8 +272,16 @@ export default class ServicePanel {
         });
         this.$start.click(event => UI.action(event.currentTarget, async () => { await service.start(); await this.onProgress(service); }));
         this.$stop.click(event => UI.action(event.currentTarget, async () => { await service.stop(); await this.onProgress(service); }));
+        this.$cancel.click(event => UI.action(event.currentTarget, async () => {
+            if (!confirm('放弃当前尚未完成的任务？已保存的旧备份不会被删除，未发布的数据将被清理。')) return;
+            await service.cancelCurrentJob();
+            await this.onProgress(service);
+        }));
         this.panel.querySelector('[name="reconnect"]').addEventListener('click', event => UI.action(event.currentTarget, () => this.onProgress(service)));
-        service.addEventListener('disconnect', () => this.refreshError.classList.remove('is-hidden'));
+        service.addEventListener('disconnect', () => {
+            if (this.lastStatus === 1) return;
+            this.onProgress(service);
+        });
         this.ready = this.init(service);
     }
 
@@ -298,10 +309,21 @@ export default class ServicePanel {
         this.$logs.scrollTop(this.$logs.prop('scrollHeight'));
     }
 
-    renderStatus(status) {
+    renderStatus(status, job = null) {
+        this.lastStatus = status;
         let $panel = $(this.panel);
         let statusName = '状态未知';
         let visibleControl;
+        let canCancel = false;
+        let startLabel = '开始';
+        const isRetryable = (() => {
+            if (!job || !job.finishedAt || job.cancelled || job.isMigration) return false;
+            const tasks = Array.isArray(job.tasks) ? job.tasks : [];
+            if (tasks.some(task => String(task?.taskType || task?.name || '').startsWith('Migrate'))) return false;
+            const failed = Array.isArray(job.failedTasks) ? job.failedTasks.length : 0;
+            const completed = Array.isArray(job.completedTaskTypes) ? job.completedTaskTypes.length : 0;
+            return failed > 0 && tasks.length > completed;
+        })();
         // Service.STATE_STOPPED = 1
         // Service.STATE_START_PENDING = 2
         // Service.STATE_STOP_PENDING = 3
@@ -309,7 +331,14 @@ export default class ServicePanel {
         switch (status) {
             case 1:
                 statusName = '已停止';
-                visibleControl = this.$start[0];
+                if (job && !job.finishedAt) {
+                    visibleControl = this.$start[0];
+                    startLabel = '继续';
+                    canCancel = true;
+                } else if (isRetryable) {
+                    visibleControl = this.$start[0];
+                    startLabel = '重试失败项';
+                }
                 break;
             case 2:
                 visibleControl = this.$stop[0];
@@ -324,6 +353,9 @@ export default class ServicePanel {
                 statusName = '运行中';
                 break;
         }
+        const startText = this.$start[0]?.querySelector('label');
+        if (startText && startText.textContent !== startLabel) startText.textContent = startLabel;
+        if (this.$cancel[0]) this.$cancel[0].classList.toggle('is-hidden', !canCancel);
         this.panel.querySelectorAll('.service-ctrl').forEach(control => {
             control.classList.toggle('is-hidden', control !== visibleControl);
         });
@@ -357,7 +389,7 @@ export default class ServicePanel {
                 // Reads are serialized, so an older read cannot overwrite a
                 // newer rendered frame. Render even if another read is queued:
                 // continuous events must not starve the UI of all updates.
-                this.renderStatus(status);
+                this.renderStatus(status, job);
                 this.progressList.render(job);
                 const summary = this.panel?.querySelector('.service-overview');
                 if (summary) {
@@ -369,6 +401,21 @@ export default class ServicePanel {
                 }
                 const jobError = this.panel?.querySelector('.service-job-error');
                 if (jobError) { jobError.textContent = job?.error || ''; jobError.classList.toggle('is-hidden', !job?.error); }
+                const pacingNote = this.panel?.querySelector('.service-pacing-note');
+                if (pacingNote) {
+                    const failedText = (job?.failedTasks || []).map(f => f?.error || '').join(' ');
+                    const rateLimited = Boolean(job?.finishedAt && !job?.cancelled && (/访问限制|429/.test(failedText) || /访问限制|429/.test(job?.error || '')));
+                    let note = '';
+                    if (rateLimited) {
+                        note = '已保存当前断点。请先在浏览器打开豆瓣页面完成验证或稍等片刻，再点击上方「重试失败项」从中断页码继续，无需重头开始。';
+                    } else if (!job?.finishedAt && job?.pacing?.coolingDown) {
+                        note = `数据量较大，正在短暂冷却后继续（当前自动基准 ${(job.pacing.effectiveMs / 1000).toFixed(1)} 秒/次），以降低触发豆瓣验证的概率。`;
+                    } else if (!job?.finishedAt && job?.pacing?.adaptive) {
+                        note = `检测到数据量较大，已自动放慢请求节奏（约 ${(job.pacing.effectiveMs / 1000).toFixed(1)} 秒/次 + 随机抖动），以降低触发豆瓣验证的概率。`;
+                    }
+                    pacingNote.textContent = note;
+                    pacingNote.classList.toggle('is-hidden', !note);
+                }
                 this.refreshError.classList.add('is-hidden');
             } catch (error) {
                 if (!this.refreshQueued) this.refreshError.classList.remove('is-hidden');

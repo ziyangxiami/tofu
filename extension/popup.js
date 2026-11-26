@@ -60,13 +60,36 @@ class PopupMenu {
         let menu = new PopupMenu('.menu', service);
 
         menu.refresh = async () => {
-            let status;
-            try { status = await service.getProperty('status'); } catch (_) {}
+            let status, action;
+            try {
+                [status, action] = await Promise.all([
+                    service.getProperty('status'),
+                    service.getProperty('serviceAction').catch(() => null),
+                ]);
+            } catch (_) {}
             menu.disable('Start'); menu.disable('Stop');
-            if (status === 1) menu.enable('Start');
-            else if ([2, 4].includes(status)) menu.enable('Stop');
+            const startButton = menu.getItem('Start');
+            if (typeof action === 'string') {
+                if (['resume', 'retry'].includes(action)) {
+                    menu.enable('Start');
+                    if (startButton) {
+                        startButton.textContent = action === 'retry' ? '▷ 重试失败项' : '▷ 继续服务';
+                    }
+                } else if (action === 'stop') {
+                    menu.enable('Stop');
+                } else if (startButton) {
+                    startButton.textContent = '▷ 继续服务';
+                }
+            } else {
+                if (status === 1) menu.enable('Start');
+                else if ([2, 4].includes(status)) menu.enable('Stop');
+            }
             const label = document.querySelector('#popup-state');
-            if (label) label.textContent = ({1: '服务已停止', 2: '等待新任务', 3: '正在停止', 4: '正在备份'})[status] || '后台暂时无法连接';
+            if (label) {
+                label.textContent = action === 'retry' ? '有失败项可重试' :
+                    action === 'resume' ? '任务已暂停' :
+                    ({1: '服务已停止', 2: '等待新任务', 3: '正在停止', 4: '正在备份'})[status] || '后台暂时无法连接';
+            }
         };
         await menu.refresh();
         service.addEventListener?.('statechange', () => menu.refresh());

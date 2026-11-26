@@ -1,7 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
-import {numericId, validatePage, htmlPageCount} from './_validation.js';
+import {numericId, validatePage, htmlPageCount, pageStep} from './_validation.js';
 
 const API_PAGE_SIZE = 50;
 const WEB_PAGE_SIZE = 20;
@@ -17,18 +17,21 @@ export default class Follower extends Task {
             .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
-        let pageCount = 1;
-        for (let i = 0; i < pageCount; i ++) {
+        let total = null;
+        const seenIds = new Set();
+        for (let start = 0; total === null || start < total;) {
             let fetch = await this.fetch
-            let response = await fetch(baseURL.replace('{start}', i * API_PAGE_SIZE), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/follower'}});
+            let response = await fetch(baseURL.replace('{start}', start), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/follower'}});
             if (response.status !== 200) {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let json = await response.json();
-            this.total = validatePage(json, 'users', i * API_PAGE_SIZE);
-            pageCount = Math.ceil(this.total / API_PAGE_SIZE);
+            total = this.total = validatePage(json, 'users', start);
+            const step = pageStep(json, start, API_PAGE_SIZE, total);
             for (let user of json.users) {
-                numericId(user?.id, '用户');
+                const userId = numericId(user?.id, '用户');
+                if (seenIds.has(userId)) continue;
+                seenIds.add(userId);
                 let row = {
                     version: this.jobId,
                     user: user,
@@ -36,6 +39,7 @@ export default class Follower extends Task {
                 await this.storage.follower.put(row);
                 this.step();
             }
+            start += step;
         }
     }
 
@@ -51,7 +55,7 @@ export default class Follower extends Task {
             if (!html.querySelector('.user-list')) {
                 throw new TaskError('无法识别被关注列表，请确认登录状态或页面是否需要验证');
             }
-            totalPage = htmlPageCount(html);
+            totalPage = htmlPageCount(html, i + 1);
             for (let li of html.querySelectorAll('.user-list>li')) {
                 let idText = li.id ? li.id.substr(1) : '';
                 let avatar = li.querySelector('.face');
@@ -106,7 +110,7 @@ export default class Follower extends Task {
             if (!html.querySelector('.obu')) {
                 throw new TaskError('无法识别被关注列表，请确认页面是否需要验证');
             }
-            totalPage = htmlPageCount(html);
+            totalPage = htmlPageCount(html, i + 1);
             for (let anchor of html.querySelectorAll('.obu .nbg')) {
                 let avatar = anchor.querySelector('img');
                 let avatarSrc = avatar ? (avatar.getAttribute('src') || '') : '';
@@ -145,7 +149,7 @@ export default class Follower extends Task {
             await this.crawlByApi();
         }
         await this.storage.table('version').put({table: 'follower', version: this.jobId, updated: Date.now()});
-        this.complete();
+        this.total = this.completion;
     }
 
     get name() {

@@ -2,6 +2,7 @@
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
 import {recordDiagnostic} from '../services/diagnostics.js';
+import {pageStep, htmlPageCount, assertNotChallengePage} from './_validation.js';
 
 
 const PAGE_SIZE = 50;
@@ -103,12 +104,12 @@ export default class Doulist extends Task {
 
         for (let type of ['owned', 'following']) {
             let urlWithType = baseURL.replace('{type}', type);
-            let pageCount = 1;
-            for (let i = 0; i < pageCount; i ++) {
-                const {json, total} = await this.fetchListPage(urlWithType.replace('{start}', i * PAGE_SIZE), type, i * PAGE_SIZE);
-                totals[type] = total;
+            let segmentTotal = null;
+            for (let start = 0; segmentTotal === null || start < segmentTotal;) {
+                const {json, total} = await this.fetchListPage(urlWithType.replace('{start}', start), type, start);
+                totals[type] = segmentTotal = total;
                 this.total = totals.owned + totals.following;
-                pageCount = Math.ceil(total / PAGE_SIZE);
+                const step = pageStep(json, start, PAGE_SIZE, total);
                 for (let doulist of json.doulists) {
                     let doulistId = this.doulistId(doulist);
                     if (doulistId === null) {
@@ -144,14 +145,15 @@ export default class Doulist extends Task {
                             throw new TaskError('豆瓣服务器返回错误');
                         }
                         let html = this.parseHTML(await response.text());
-                        const currentPage = html.querySelector('.paginator .thispage');
-                        if (currentPage) {
-                            const pageText = String(currentPage.dataset?.totalPage ?? currentPage.getAttribute('data-total-page') ?? '');
-                            doulistTotalPage = /^\d+$/.test(pageText) ? Number(pageText) : NaN;
-                            if (!Number.isSafeInteger(doulistTotalPage) || doulistTotalPage <= 0) {
-                                throw new TaskError('豆列分页信息无效，已保存此前内容');
-                            }
+                        assertNotChallengePage(html, '豆列页面', response.url);
+                        if (i > 0 && !html.querySelector('.paginator')) {
+                            throw new TaskError('豆列分页信息缺失，已保存此前内容');
                         }
+                        const parsedPages = htmlPageCount(html, i + 1);
+                        if (i > 0 && parsedPages < doulistTotalPage) {
+                            throw new TaskError('豆列分页信息异常，已保存此前内容');
+                        }
+                        doulistTotalPage = parsedPages;
                         for (let item of html.querySelectorAll('.doulist-item')) {
                             let addBtn = item.querySelector('.lnk-doulist-add');
                             if (!addBtn) continue;
@@ -161,6 +163,10 @@ export default class Doulist extends Task {
                                 continue;
                             }
                             let itemBody = item.querySelector('.bd');
+                            if (!itemBody) {
+                                invalidItemIds++;
+                                continue;
+                            }
                             let itemTypes = [];
                             for (let itemType of itemBody.classList) {
                                 if (itemType.startsWith('doulist-')) {
@@ -230,6 +236,7 @@ export default class Doulist extends Task {
                     await this.storage.doulist.put(doulistRow);
                     this.step();
                 }
+                start += step;
             }
         }
         if (this.missingTags > 0) {

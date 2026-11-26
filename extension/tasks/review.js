@@ -1,7 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
-import {numericId, validatePage} from './_validation.js';
+import {numericId, validatePage, pageStep} from './_validation.js';
 import Storage  from "../storage.js";
 
 const PAGE_SIZE = 50;
@@ -33,21 +33,30 @@ export default class Review extends Task {
             .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
+        const seenIds = new Set();
         for (let type of ['music', 'book', 'movie', 'drama', 'game']) {
             let fullURL = baseURL.replace('{type}', type);
-            let pageCount = 1;
-            for (let i = 0; i < pageCount; i ++) {
-                let response = await (await this.fetch)(fullURL.replace('{start}', i * PAGE_SIZE), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/' + type}});
+            let typeTotal = null;
+            for (let start = 0; typeTotal === null || start < typeTotal;) {
+                let response = await (await this.fetch)(fullURL.replace('{start}', start), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/' + type}});
                 if (response.status !== 200) {
                     throw new TaskError('豆瓣服务器返回错误');
                 }
                 let json = await response.json();
-                const total = validatePage(json, 'reviews', i * PAGE_SIZE);
-                if (i === 0) this.total += total;
-                pageCount = Math.ceil(total / PAGE_SIZE);
+                const total = validatePage(json, 'reviews', start);
+                if (typeTotal === null) {
+                    typeTotal = total;
+                    this.total += total;
+                } else if (typeTotal !== total) {
+                    throw new TaskError('备份期间评论总数发生变化，请重试');
+                }
+                const step = pageStep(json, start, PAGE_SIZE, typeTotal);
                 for (let review of json.reviews) {
+                    const reviewId = numericId(review.id, '评论');
+                    if (seenIds.has(reviewId)) continue;
+                    seenIds.add(reviewId);
                     let fulltext = await this.fetchReview(review.url);
-                    let row = await this.storage.review.get(numericId(review.id, '评论'));
+                    let row = await this.storage.review.get(reviewId);
                     if (row) {
                         let lastVersion = row.version;
                         row.version = version;
@@ -60,7 +69,7 @@ export default class Review extends Task {
                     } else {
                         review.fulltext = fulltext;
                         row = {
-                            id: numericId(review.id, '评论'),
+                            id: reviewId,
                             version: version,
                             type: type,
                             review: review,
@@ -69,10 +78,11 @@ export default class Review extends Task {
                     await this.storage.review.put(row);
                     this.step();
                 }
+                start += step;
             }
         }
         await this.storage.table('version').put({table: 'review', version: version, updated: Date.now()});
-        this.complete();
+        this.total = this.completion;
     }
 
     get name() {

@@ -2,6 +2,7 @@
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
 import {recordDiagnostic} from '../services/diagnostics.js';
+import {pageStep, assertNotChallengePage} from './_validation.js';
 
 
 const PAGE_SIZE = 50;
@@ -90,6 +91,7 @@ export default class Annotation extends Task {
                 throw new TaskError('豆瓣读书笔记公开页面返回错误');
             }
             let html = this.parseHTML(await response.text());
+            assertNotChallengePage(html, '读书笔记页面', response.url);
             let pageIds = [];
             let groups = html.querySelectorAll('.annotations-item');
             for (let group of groups) {
@@ -136,6 +138,9 @@ export default class Annotation extends Task {
             let nextLink = html.querySelector('.paginator .next a');
             let href = nextLink ? (nextLink.getAttribute('href') || '') : '';
             let followingURL = href ? new URL(href, nextURL).toString() : null;
+            if (visited.size > 0 && pageIds.length === 0) {
+                throw new TaskError('豆瓣读书笔记续页未返回内容，已保留旧备份');
+            }
             let signature = `${pageIds.length}:${pageIds[0] || ''}:${pageIds.at(-1) || ''}`;
             if (followingURL && signature === previousSignature) {
                 throw new TaskError('豆瓣读书笔记分页内容重复，已保存此前页面');
@@ -181,12 +186,12 @@ export default class Annotation extends Task {
             .replace('{ck}', this.session?.cookies?.ck || '')
             .replace('{uid}', this.targetUser.id);
 
-        let pageCount = 1;
+        let total = null;
         let useWebFallback = false;
         let fallbackReason;
-        for (let i = 0; i < pageCount; i ++) {
+        for (let start = 0, i = 0; total === null || start < total; i++) {
             let fetch = await this.fetch
-            let response = await fetch(baseURL.replace('{start}', i * PAGE_SIZE), {headers: {'X-Override-Referer': 'https://m.douban.com/'}});
+            let response = await fetch(baseURL.replace('{start}', start), {headers: {'X-Override-Referer': 'https://m.douban.com/'}});
             if (response.status !== 200) {
                 useWebFallback = true;
                 fallbackReason = 'http_error';
@@ -197,8 +202,8 @@ export default class Annotation extends Task {
                 break;
             }
             let json = await response.json();
-            this.total = parseInt(json?.total) || 0;
-            pageCount = Math.ceil(this.total / PAGE_SIZE);
+            total = this.total = parseInt(json?.total) || 0;
+            const step = pageStep(json, start, PAGE_SIZE, this.total);
             const collections = json?.collections;
             if (i === 0) {
                 await recordDiagnostic(this.diagnosticRunId, 'annotation.api', {
@@ -218,10 +223,13 @@ export default class Annotation extends Task {
                 fallbackReason = 'empty_response';
                 break;
             }
-            if (i === 0 && this.total > 0 && collections.length === 0) {
-                useWebFallback = true;
-                fallbackReason = 'invalid_response';
-                break;
+            if (this.total > 0 && collections.length === 0 && start < this.total) {
+                if (i === 0) {
+                    useWebFallback = true;
+                    fallbackReason = 'invalid_response';
+                    break;
+                }
+                throw new TaskError('读书笔记接口后续分页返回空列表，已保留旧备份');
             }
             for (let collection of collections) {
                 let subject = collection.subject;
@@ -230,6 +238,7 @@ export default class Annotation extends Task {
                     await this.saveAnnotation(annotation, subject, version);
                 }
             }
+            start += step;
         }
         if (useWebFallback) {
             await recordDiagnostic(this.diagnosticRunId, 'annotation.fallback', {

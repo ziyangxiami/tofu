@@ -59,7 +59,7 @@ class FakeJob {
 }
 synthetic('storage.js', {default: FakeStorage});
 synthetic('services/Job.js', {default: FakeJob});
-synthetic('services/diagnostics.js', {recordDiagnostic: async () => {}});
+synthetic('services/diagnostics.js', {recordDiagnostic: async () => {}, newDiagnosticRunId: () => 'migration-test'});
 function create(name) {
     const filename = resolve(root, name);
     if (modules.has(filename)) return modules.get(filename);

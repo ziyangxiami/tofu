@@ -28,7 +28,7 @@ export default class Blacklist extends Task {
             if (!html.querySelector('.obss.namel')) {
                 throw new TaskError('无法识别黑名单列表，请确认登录状态或页面是否需要验证');
             }
-            this.total = totalPage = htmlPageCount(html);
+            this.total = totalPage = htmlPageCount(html, i + 1);
             for (let dl of html.querySelectorAll('.obss.namel>dl')) {
                 let avatar = dl.querySelector('.imgg');
                 let avatarSrc = avatar ? (avatar.getAttribute('src') || '') : '';
