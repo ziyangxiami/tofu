@@ -38,8 +38,11 @@ const task = new vm.SourceTextModule(source('services/Task.js'), {context});
 await task.link(specifier => ({'./TaskError.js': taskError, '../storage.js': storageModule,
     './html_parser.js': parserModule})[specifier]);
 await task.evaluate();
+const validation = new vm.SourceTextModule(source('tasks/_validation.js'), {context});
+await validation.link(specifier => ({'../services/TaskError.js': taskError})[specifier]);
+await validation.evaluate();
 const imports = {'../services/Task.js': task, '../services/TaskError.js': taskError,
-    '../services/diagnostics.js': diagnostics};
+    '../services/diagnostics.js': diagnostics, './_validation.js': validation};
 const taskModules = new Map();
 async function loadTask(filename) {
     const module = new vm.SourceTextModule(source(filename), {context});

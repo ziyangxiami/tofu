@@ -59,11 +59,13 @@ export default class TaskProgressList {
             }
             const name = task.name || (task.taskType === 'Review' ? '评论' : '任务');
             const completed = (job.completedTaskTypes || []).includes(task.taskType);
-            const current = !completed && !!job._currentTask &&
-                (task.taskType ? task.taskType === job._currentTask.taskType : name === job._currentTask.name);
+            const terminal = !!job.finishedAt || !!job.cancelled;
+            const activeTypes = Array.isArray(job.activeTaskTypes) ? job.activeTaskTypes : [];
+            const current = !terminal && !completed && (activeTypes.includes(task.taskType) || (!!job._currentTask &&
+                (task.taskType ? task.taskType === job._currentTask.taskType : name === job._currentTask.name)));
             const progress = formatTaskProgress(task, completed);
             const failure = job.failedTasks?.find(item => item.task === name || item.task === task.taskType);
-            const state = failure ? '失败' : completed ? '完成' : current ? '处理中' : job.finishedAt ? '未执行' : '待处理';
+            const state = failure ? '失败' : completed ? '完成' : job.cancelled ? '已取消' : current ? '处理中' : job.finishedAt ? '未执行' : '待处理';
             if (failure) { progress.text = '失败 · ' + progress.text; progress.description = failure.error; }
             row.element.classList.toggle('has-text-danger', !!failure);
             row.bar.classList.toggle('is-danger', !!failure);

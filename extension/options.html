@@ -139,8 +139,17 @@
             </div>
             <div class="columns">
                 <div class="column is-10">
+                    <label>大账号自动放慢节奏（推荐）</label>
+                    <p class="help">开启后，扩展会根据备份规模自动放慢并微幅随机化请求节奏、在大批公开页抓取时短暂冷却，降低触发豆瓣安全验证的概率；不会覆盖您手动设置的更大间隔。</p>
+                </div>
+                <div class="column">
+                    <input type="checkbox" aria-label="大账号自动放慢节奏" name="service.adaptivePacing">
+                </div>
+            </div>
+            <div class="columns">
+                <div class="column is-10">
                     <label>请求间隔</label>
-                    <p class="help">请求间隔过短可能导致被豆瓣服务器屏蔽。</p>
+                    <p class="help">请求间隔过短可能导致被豆瓣服务器屏蔽。参考建议：普通账号（&lt; 1,500 条）1.0 秒；较大账号（1,500–5,000 条）1.5 秒；超大账号（5,000+ 条）2.0 秒以上（开启上方自动节奏后将按规模自动调整）。</p>
                 </div>
                 <div class="column">
                     <div class="field has-addons">
@@ -235,9 +244,10 @@
                         <label>停止</label>
                     </button>
                     <button class="button service-ctrl is-loading is-hidden" name="loading">Loading</button>
+                    <button class="button is-light is-hidden" type="button" name="cancel-job">放弃当前任务</button>
                 </div>
             </div>
-            <div class="service-overview toolbar-meta" role="status"></div><p class="service-job-error inline-error is-hidden" role="alert"></p><table class="table is-fullwidth">
+            <div class="service-overview toolbar-meta" role="status"></div><p class="service-pacing-note help is-hidden" role="status"></p><p class="service-job-error inline-error is-hidden" role="alert"></p><table class="table is-fullwidth">
                 <tbody class="job"></tbody>
             </table>
             <p class="help service-refresh-error has-text-danger is-hidden" role="status">连接中断或进度更新失败，已保留上次显示。<button class="button is-small" name="reconnect">重新连接</button></p>

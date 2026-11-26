@@ -1,7 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
-import {htmlPageCount} from './_validation.js';
+import {htmlPageCount, assertNotChallengePage} from './_validation.js';
 
 
 const PAGE_SIZE = 20;
@@ -37,9 +37,14 @@ export default class Board extends Task {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let html =  this.parseHTML(await response.text());
-            this.total = totalPage = htmlPageCount(html);
+            assertNotChallengePage(html, '留言板页面', response.url);
+            this.total = totalPage = htmlPageCount(html, i + 1);
+            const items = html.querySelectorAll('#comments>.comment-item');
+            if (items.length === 0 && (i > 0 || totalPage > 1)) {
+                throw new TaskError('留言板分页未返回留言，已保留旧备份');
+            }
 
-            for (let li of html.querySelectorAll('#comments>.comment-item')) {
+            for (let li of items) {
                 let messageId = parseInt(li.dataset?.cid || li.getAttribute('data-cid'));
                 if (!Number.isSafeInteger(messageId) || messageId <= 0) {
                     throw new TaskError('留言缺少有效 ID');

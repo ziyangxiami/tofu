@@ -5,7 +5,7 @@ import Job from './services/Job.js';
 import AsyncBlockingQueue from "./services/AsyncBlockingQueue.js";
 import StateChangeEvent from "./services/StateChangeEvent.js";
 import Logger from "./services/Logger.js";
-import {recordDiagnostic} from './services/diagnostics.js';
+import {recordDiagnostic, newDiagnosticRunId} from './services/diagnostics.js';
 import Annotation from './tasks/annotation.js';
 import Blacklist from './tasks/blacklist.js';
 import Board from './tasks/board.js';
@@ -29,8 +29,8 @@ import MigrateNote from './tasks/migrate/note.js';
 import MigrateReview from './tasks/migrate/review.js';
 import {validId} from './tasks/migrate/MigrationTask.js';
 
-const RPC_METHODS = new Set(['ping', 'start', 'stop', 'createJob', 'previewMigration', 'loadSettings']);
-const RPC_PROPERTIES = new Set(['status', 'currentJob', 'displayJob', 'debug', 'requestInterval', 'queuedJobCount', 'hasUnfinishedJobs']);
+const RPC_METHODS = new Set(['ping', 'start', 'stop', 'createJob', 'previewMigration', 'loadSettings', 'retryLastJob', 'cancelCurrentJob']);
+const RPC_PROPERTIES = new Set(['status', 'currentJob', 'displayJob', 'debug', 'requestInterval', 'adaptivePacing', 'queuedJobCount', 'hasUnfinishedJobs', 'canRetryLastJob', 'serviceAction']);
 
 const TASK_MODULES = {
     'annotation': Annotation,
@@ -83,6 +83,7 @@ export default class Service extends EventTarget {
         this.lastRequest = 0;
         this._debug = false;
         this._requestInterval = 1000;
+        this._adaptivePacing = true;
         if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onConnect) {
             chrome.runtime.onConnect.addListener(port => this.onConnect(port));
         } else if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.onConnect) {
@@ -106,7 +107,8 @@ export default class Service extends EventTarget {
             _status: this._status,
             lastRequest: this.lastRequest,
             _debug: this._debug,
-            _requestInterval: this._requestInterval
+            _requestInterval: this._requestInterval,
+            _adaptivePacing: this._adaptivePacing
         };
     }
 
@@ -123,6 +125,7 @@ export default class Service extends EventTarget {
         instance.lastRequest = json.lastRequest;
         instance._debug = json._debug;
         instance._requestInterval = json._requestInterval !== undefined ? json._requestInterval : 1000;
+        instance._adaptivePacing = json._adaptivePacing !== undefined ? json._adaptivePacing !== false : true;
 
         // 重新初始化任务队列
         instance._lastJob = json.lastJob || null;
@@ -172,6 +175,14 @@ export default class Service extends EventTarget {
     set requestInterval(value) {
         let parsed = parseInt(value, 10);
         this._requestInterval = !isNaN(parsed) && parsed >= 0 ? parsed : 1000;
+    }
+
+    get adaptivePacing() {
+        return this._adaptivePacing !== false;
+    }
+
+    set adaptivePacing(value) {
+        this._adaptivePacing = value !== false;
     }
 
     /**
@@ -304,7 +315,9 @@ export default class Service extends EventTarget {
                     retVal = await this[message.method].apply(this, message.args);
                 }
                 if (retVal && typeof retVal === 'object') {
-                    if (typeof retVal.toJSON === 'function') {
+                    if (typeof retVal.toPublicJSON === 'function') {
+                        retVal = retVal.toPublicJSON();
+                    } else if (typeof retVal.toJSON === 'function') {
                         retVal = retVal.toJSON();
                     } else if (retVal.constructor && retVal.constructor.name !== 'Object' && retVal.constructor.name !== 'Array') {
                         retVal = true;
@@ -378,10 +391,43 @@ export default class Service extends EventTarget {
         });
     }
 
+    static sanitizeJob(job) {
+        if (!job) return null;
+        if (typeof job.toPublicJSON === 'function') return job.toPublicJSON();
+        const copy = {...job};
+        delete copy._session;
+        if (copy.finishedAt || copy.cancelled) {
+            copy.activeTaskTypes = [];
+            copy._currentTask = null;
+        }
+        if (Array.isArray(copy.tasks)) {
+            copy.tasks = copy.tasks.map(task => {
+                const taskCopy = {...task};
+                delete taskCopy.session;
+                delete taskCopy.targetUser;
+                return taskCopy;
+            });
+        }
+        if (copy._currentTask && typeof copy._currentTask === 'object') {
+            copy._currentTask = {...copy._currentTask};
+            delete copy._currentTask.session;
+            delete copy._currentTask.targetUser;
+        }
+        return copy;
+    }
+
+    static isRetryableJob(job) {
+        if (!job || job.cancelled || job.isMigration) return false;
+        const tasks = Array.isArray(job.tasks) ? job.tasks : [];
+        if (tasks.some(task => String(task?.taskType || task?.name || '').startsWith('Migrate'))) return false;
+        const failed = Array.isArray(job.failedTasks) ? job.failedTasks.length : 0;
+        const completed = Array.isArray(job.completedTaskTypes) ? job.completedTaskTypes.length : 0;
+        return failed > 0 && tasks.length > completed;
+    }
+
     async start() { return Service.withDatabaseLock(() => this._start()); }
 
-    async _start() {
-        console.log("service start")
+    async _activateStart() {
         let originalState = this._status;
         if (originalState !== Service.STATE_STOPPED) return false;
         this._status = Service.STATE_START_PENDING;
@@ -390,6 +436,101 @@ export default class Service extends EventTarget {
         const continuations = this._continuations.splice(0);
         for (let continuation of continuations) continuation();
         await this.saveState();
+        return true;
+    }
+
+    async _start() {
+        console.log("service start")
+        if (this._status !== Service.STATE_STOPPED) return false;
+        if (!this._currentJob && this._jobQueue.isEmpty()) {
+            if (this.canRetryLastJob) {
+                return await this._retryLastJob();
+            }
+            return false;
+        }
+        return await this._activateStart();
+    }
+
+    async retryLastJob() { return Service.withDatabaseLock(() => this._retryLastJob()); }
+
+    async _retryLastJob() {
+        if (this._status !== Service.STATE_STOPPED || this._currentJob || !this._jobQueue.isEmpty() || !this.canRetryLastJob) {
+            return false;
+        }
+        const IMAGE_PRODUCERS = new Set(['Photo', 'Note', 'Review', 'Annotation', 'Status']);
+        const completed = new Set(Array.isArray(this._lastJob.completedTaskTypes) ? this._lastJob.completedTaskTypes : []);
+        const hasPendingImageProducer = (this._lastJob.tasks || []).some(task =>
+            IMAGE_PRODUCERS.has(task.taskType) && !completed.has(task.taskType));
+        if (hasPendingImageProducer) completed.delete('Files');
+
+        const accountId = this._lastJob.localUserId || this._lastJob.targetUserId || this._lastJob._session?.userId;
+        if (accountId && this._lastJob._id) {
+            const storage = new Storage(accountId);
+            if (storage.global && typeof storage.global.open === 'function') {
+                await storage.global.open();
+                let account;
+                try { account = await storage.global.account.get({userId: accountId}); }
+                finally { storage.global.close(); }
+                if (!account) {
+                    this._lastJob = null;
+                    await this.saveState();
+                    throw new Error('对应账号的本地备份已删除，请新建完整备份。');
+                }
+                if (completed.size > 0 && storage.local && typeof storage.local.open === 'function') {
+                    await storage.local.open();
+                    try {
+                        for (const taskType of completed) {
+                            if (taskType === 'Files') continue;
+                            const receipt = await storage.local.table('version').get('__snapshot_commit:' + taskType);
+                            if (!receipt || receipt.version !== this._lastJob._id) {
+                                this._lastJob = null;
+                                await this.saveState();
+                                throw new Error('部分已完成任务的本地快照已变更或缺失，请新建完整备份。');
+                            }
+                        }
+                    } finally { storage.local.close(); }
+                }
+            }
+        }
+
+        const job = Job.fromJSON(this._lastJob, this, null);
+        job._completedTaskTypes = [...completed];
+        job._failedTasks = [];
+        job._errorMessage = null;
+        job._diagnosticRunId = newDiagnosticRunId();
+        this._lastJob = null;
+        this._jobQueue.enqueue(job);
+        await this.saveState();
+        return await this._activateStart();
+    }
+
+    async cancelCurrentJob() { return Service.withDatabaseLock(() => this._cancelCurrentJob()); }
+
+    async _cancelCurrentJob() {
+        if (this._status !== Service.STATE_STOPPED || !this._currentJob) return false;
+        const job = this._currentJob;
+        if (typeof job.cancel === 'function') job.cancel();
+        if (this._runningJobPromise) {
+            const continuations = this._continuations.splice(0);
+            for (const continuation of continuations) continuation();
+            await this._runningJobPromise.catch(() => undefined);
+        }
+        const userId = job._localUserId || job._targetUserId || job._session?.userId;
+        if (userId && job._id) {
+            try {
+                await new Storage(userId).deleteTaskStages(userId, null, job._id);
+            } catch (_) {}
+        }
+        this._lastJob = {
+            ...Service.sanitizeJob(job),
+            activeTaskTypes: [],
+            _currentTask: null,
+            cancelled: true,
+            finishedAt: Date.now(),
+        };
+        this._currentJob = null;
+        await this.saveState();
+        this.dispatchEvent(new Event('progress'));
         return true;
     }
 
@@ -501,7 +642,7 @@ export default class Service extends EventTarget {
         if (this._status === Service.STATE_STOPPED) {
             await this._start();
         }
-        return job.toJSON();
+        return typeof job.toPublicJSON === 'function' ? job.toPublicJSON() : job.toJSON();
     }
 
     /**
@@ -579,10 +720,22 @@ export default class Service extends EventTarget {
 
     get queuedJobCount() { return this._jobQueue.length; }
 
-    get displayJob() { return this._currentJob || this._lastJob || null; }
+    get canRetryLastJob() {
+        return !this._currentJob && this._jobQueue.isEmpty() && Service.isRetryableJob(this._lastJob);
+    }
+
+    get serviceAction() {
+        if (this._status === Service.STATE_START_PENDING || this._status === Service.STATE_RUNNING) return 'stop';
+        if (this._status === Service.STATE_STOP_PENDING) return 'stopping';
+        if (this._currentJob || !this._jobQueue.isEmpty()) return 'resume';
+        if (this.canRetryLastJob) return 'retry';
+        return 'idle';
+    }
+
+    get displayJob() { return Service.sanitizeJob(this._currentJob || this._lastJob || this._jobQueue.items[0] || null); }
 
     get currentJob() {
-        return this._currentJob;
+        return Service.sanitizeJob(this._currentJob);
     }
 
     static async getInstance() {
@@ -649,64 +802,109 @@ export default class Service extends EventTarget {
         let lastRequest = 0;
 
         while (RUN_FOREVER) {
-            console.debug("RUN_FOREVER")
-            await service.ready();
-            if (!service._currentJob && service._jobQueue.isEmpty()) {
-                // A worker can be reclaimed after start() persisted START_PENDING
-                // but before it received a job. Restoring that snapshot must not
-                // leave the UI stuck on "waiting for task" forever.
-                await service.stop();
-                continue;
-            }
-            if (!service._currentJob) {
-                console.log('Waiting for the job...');
-                logger.debug('Waiting for the job...');
-                service._currentJob = await service._jobQueue.dequeue();
-                // Persist the dequeue before running. Otherwise a Service Worker
-                // restart restores the same job both as current and queued, so it
-                // is executed again from the beginning after it completes.
-                await service.saveState();
-            }
             try {
-                await service.continue();
-                console.log('Performing job...');
-                logger.debug('Performing job...');
-                await service._currentJob.run();
-                const failedCount = service._currentJob._failedTasks?.length || 0;
-                if (failedCount) {
-                    logger.warning(`Job finished with ${failedCount} failed task(s).`);
-                } else if (service._currentJob._emptyTasks?.length) {
-                    logger.warning(`Job finished with ${service._currentJob._emptyTasks.length} empty task(s).`);
-                } else {
-                    logger.debug('Job completed...');
-                }
-                service._lastJob = {...service._currentJob.toJSON(), finishedAt: Date.now()};
-                delete service._lastJob._session;
-                for (const task of service._lastJob.tasks) { delete task.session; delete task.targetUser; }
-                service._currentJob = null;
-                if (service._jobQueue.isEmpty()) {
-                    // A drained queue is a completed backup, not an indefinitely
-                    // running service waiting for another copy of the same job.
+                console.debug("RUN_FOREVER")
+                await service.ready();
+                if (!service._currentJob && service._jobQueue.isEmpty()) {
+                    // A worker can be reclaimed after start() persisted START_PENDING
+                    // but before it received a job. Restoring that snapshot must not
+                    // leave the UI stuck on "waiting for task" forever.
                     await service.stop();
+                    continue;
                 }
-            } catch (e) {
-                console.error(e)
-                logger.error(e);
-                if (service._currentJob) service._currentJob._errorMessage = e?.message || String(e);
-                await recordDiagnostic(service._currentJob?._diagnosticRunId, 'job.finished', {
-                    outcome: 'failed', errorType: e?.name || 'Error', errorStack: e?.stack,
-                });
-                await service.stop();
-            } finally {
-                await service.saveState();
+                if (!service._currentJob) {
+                    console.log('Waiting for the job...');
+                    logger.debug('Waiting for the job...');
+                    service._currentJob = await service._jobQueue.dequeue();
+                    // Persist the dequeue before running. Otherwise a Service Worker
+                    // restart restores the same job both as current and queued, so it
+                    // is executed again from the beginning after it completes.
+                    await service.saveState();
+                }
+                const activeJob = service._currentJob;
+                try {
+                    await service.continue();
+                    console.log('Performing job...');
+                    logger.debug('Performing job...');
+                    service._runningJobPromise = activeJob.run();
+                    await service._runningJobPromise;
+                    if (!activeJob?._cancelled) {
+                        const failedCount = activeJob._failedTasks?.length || 0;
+                        if (failedCount) {
+                            logger.warning(`Job finished with ${failedCount} failed task(s).`);
+                        } else if (activeJob._emptyTasks?.length) {
+                            logger.warning(`Job finished with ${activeJob._emptyTasks.length} empty task(s).`);
+                        } else {
+                            logger.debug('Job completed...');
+                        }
+                        const ownerUserId = activeJob._session?.userId;
+                        service._lastJob = {
+                            ...activeJob.toPublicJSON(),
+                            _session: ownerUserId ? {userId: ownerUserId} : null,
+                            finishedAt: Date.now(),
+                        };
+                        service._currentJob = null;
+                        if (service._jobQueue.isEmpty()) {
+                            // A drained queue is a completed backup, not an indefinitely
+                            // running service waiting for another copy of the same job.
+                            await service.stop();
+                        }
+                    }
+                } catch (e) {
+                    if (!activeJob?._cancelled) {
+                        console.error(e)
+                        logger.error(e);
+                        if (activeJob) activeJob._errorMessage = e?.message || String(e);
+                        await recordDiagnostic(activeJob?._diagnosticRunId, 'job.finished', {
+                            outcome: 'failed', errorType: e?.name || 'Error', errorStack: e?.stack,
+                        });
+                        await service.stop();
+                    }
+                } finally {
+                    service._runningJobPromise = null;
+                    await service.saveState().catch(err => console.error('Service saveState failed:', err));
+                }
+            } catch (loopError) {
+                console.error('Service loop error:', loopError);
+                logger.error(loopError);
+                service._status = Service.STATE_STOPPED;
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
     }
 
-    static getFetchURL(service) {
+    static computePacing({baseInterval = 1000, adaptivePacing = true, estimatedItems = 0, requestCount = 0, isWebPage = false, expectedWebPages = 0, random = Math.random} = {}) {
+        const base = typeof baseInterval === 'number' && !isNaN(baseInterval) && baseInterval >= 0 ? baseInterval : 1000;
+        if (!adaptivePacing || base <= 0) {
+            return {interval: base, effectiveBase: base, floor: 0, jitter: 0, cooldown: 0, tier: 'manual', active: false};
+        }
+        const items = Number.isFinite(estimatedItems) && estimatedItems > 0 ? estimatedItems : 0;
+        const count = Number.isFinite(requestCount) && requestCount > 0 ? requestCount : 0;
+        const webPages = Number.isFinite(expectedWebPages) && expectedWebPages > 0 ? expectedWebPages : 0;
+        let floor = 0, jitterMax = 0, cooldown = 0, tier = 'normal';
+        if (items >= 5000 || count >= 300 || (isWebPage && webPages >= 200)) {
+            tier = 'large';
+            floor = isWebPage ? 2000 : 1600;
+            jitterMax = 450;
+            cooldown = (count > 0 && count % 90 === 0) ? 12000 : 0;
+        } else if (items >= 1500 || count >= 100 || (isWebPage && webPages >= 100)) {
+            tier = 'medium';
+            floor = 1500;
+            jitterMax = 350;
+            cooldown = (count > 0 && count % 100 === 0) ? 8000 : 0;
+        }
+        const effectiveBase = Math.max(base, floor);
+        const active = tier !== 'normal';
+        const jitter = active && jitterMax > 0 ? Math.round(random() * jitterMax) : 0;
+        return {interval: effectiveBase + jitter + cooldown, effectiveBase, floor, jitter, cooldown, tier, active};
+    }
+
+    static getFetchURL(service, isCancelled = () => false) {
         let logger = service.logger;
         let lastRequest = 0;
+        let requestCount = 0;
         let requestChain = Promise.resolve();
+        const cancelError = () => Object.assign(new Error('任务已取消'), {name: 'TaskError'});
 
         let executeFetch = async (resource, init, continuous, retries) => {
             const method = String(init?.method ??
@@ -715,18 +913,59 @@ export default class Service extends EventTarget {
             // A failed response does not establish whether a write reached the
             // server. Only safe read methods may be retried automatically.
             let attemptsLeft = ['GET', 'HEAD', 'OPTIONS'].includes(method) ? retries : 0;
+            const urlStr = typeof resource === 'string' ? resource : (resource?.url || '');
+            const isWebPage = /^https?:\/\/(?:movie|book|music|www)\.douban\.com\/people\//i.test(urlStr);
 
             while (true) {
                 await service.continue();
-                let interval = (service && typeof service.requestInterval === 'number') ? service.requestInterval : 1000;
+                if (isCancelled()) throw cancelError();
+                requestCount += 1;
+                let baseInterval = (service && typeof service.requestInterval === 'number') ? service.requestInterval : 1000;
+                const tasks = Array.isArray(service?._currentJob?.tasks) ? service._currentJob.tasks : [];
+                const estimatedItems = tasks.reduce((max, t) => Math.max(
+                    max,
+                    Number.isFinite(t?.total) ? t.total : 0,
+                    Number.isFinite(t?.completion) ? t.completion : 0
+                ), 0);
+                const expectedWebPages = isWebPage ? Math.ceil(estimatedItems / 15) : 0;
+                const pacing = Service.computePacing({
+                    baseInterval,
+                    adaptivePacing: service?.adaptivePacing !== false,
+                    estimatedItems,
+                    requestCount,
+                    isWebPage,
+                    expectedWebPages,
+                });
+                let interval = pacing.interval;
                 let delay = continuous ? 0 : lastRequest + interval - Date.now();
+                const coolingDown = delay > 0 && pacing.cooldown > 0;
+                if (service?._currentJob && typeof service._currentJob === 'object') {
+                    service._currentJob._pacing = {
+                        tier: pacing.tier,
+                        effectiveMs: pacing.effectiveBase,
+                        adaptive: pacing.active,
+                        coolingDown,
+                    };
+                    if (coolingDown) service.dispatchEvent(new Event('progress'));
+                }
                 if (delay > 0) {
                     await Service.waitWithKeepAlive(delay);
+                    if (coolingDown && service?._currentJob && typeof service._currentJob === 'object') {
+                        service._currentJob._pacing = {
+                            tier: pacing.tier,
+                            effectiveMs: pacing.effectiveBase,
+                            adaptive: pacing.active,
+                            coolingDown: false,
+                        };
+                        service.dispatchEvent(new Event('progress'));
+                    }
                     // The user may have stopped the service during a long wait.
                     await service.continue();
+                    if (isCancelled()) throw cancelError();
                 }
 
                 try {
+                    if (isCancelled()) throw cancelError();
                     // Request URLs can contain ck, and Request objects can carry
                     // private bodies or headers. Keep them out of service logs.
                     logger.debug(`Fetching request... (interval: ${interval}ms)`);
@@ -736,6 +975,7 @@ export default class Service extends EventTarget {
 
                     // 直接使用传入的 init 参数，不再修改 Header
                     let response = await fetch(resource, fetchInit);
+                    if (isCancelled()) throw cancelError();
                     logger.debug(`Fetch response status: ${response.status}`);
                     service.dispatchEvent(new Event("progress"));
                     return response;

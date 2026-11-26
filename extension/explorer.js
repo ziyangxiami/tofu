@@ -331,11 +331,12 @@ class Status extends Panel {
         }
         storage.local.close();
         for (let {status, comments} of collection) {
+            if (!status) continue;
             let $status = $(TEMPLATE_STATUS);
-            $status.find('.avatar>img').attr('src', status.author.avatar);
-            $status.find('.author.name').text(status.author.name);
-            $status.find('.author.uid').text('@' + status.author.uid);
-            $status.find('.activity').text(status.activity + "：");
+            $status.find('.avatar>img').attr('src', status.author?.avatar || '');
+            $status.find('.author.name').text(status.author?.name || '未知用户');
+            $status.find('.author.uid').text(status.author?.uid ? '@' + status.author.uid : '');
+            $status.find('.activity').text((status.activity || '') + "：");
             $status.find('.created').text(status.create_time);
             if (status.parent_status) {
                 let parentStatus = status.parent_status;
@@ -392,10 +393,10 @@ class Status extends Panel {
                     $resharedStatus = $('<article class="box">').text(resharedStatus.msg);
                 } else {
                     $resharedStatus = $(TEMPLATE_RESHARED_STATUS);
-                    $resharedStatus.find('.avatar>img').attr('src', resharedStatus.author.avatar);
-                    $resharedStatus.find('.author.name').text(resharedStatus.author.name);
-                    $resharedStatus.find('.author.uid').text('@' + resharedStatus.author.uid);
-                    $resharedStatus.find('.activity').text(resharedStatus.activity + "：");
+                    $resharedStatus.find('.avatar>img').attr('src', resharedStatus.author?.avatar || '');
+                    $resharedStatus.find('.author.name').text(resharedStatus.author?.name || '未知用户');
+                    $resharedStatus.find('.author.uid').text(resharedStatus.author?.uid ? '@' + resharedStatus.author.uid : '');
+                    $resharedStatus.find('.activity').text((resharedStatus.activity || '') + "：");
                     $resharedStatus.find('.created').text(resharedStatus.create_time);
                     $resharedStatus.find('.text').text(resharedStatus.text);
                     if (resharedStatus.images && resharedStatus.images.length > 0) {
@@ -500,18 +501,19 @@ class Interest extends SegmentsPanel {
         }
         storage.local.close();
         for (let {interest, version} of collection) {
+            if (!interest) continue;
             let $interest = $(TEMPLATE_INTEREST);
-            let subject = interest.subject;
-            $interest.find('.subject-cover img').attr('src', subject.pic.normal);
-            $interest.find('.title').text(subject.title);
-            $interest.find('.subject-url').attr('href', subject.url);
-            if (interest.subject.null_rating_reason) {
+            let subject = interest.subject || {};
+            $interest.find('.subject-cover img').attr('src', subject.pic?.normal || '');
+            $interest.find('.title').text(subject.title || '未命名条目');
+            $interest.find('.subject-url').attr('href', subject.url || '#');
+            if (subject.null_rating_reason) {
                 $interest.find('.rating').text(subject.null_rating_reason);
             } else {
                 $interest.find('.rating-value').text(formatRating(subject));
                 $interest.find('.rating-count').text(subject.rating?.count || '');
             }
-            $interest.find('.subtitle').text(subject.card_subtitle);
+            $interest.find('.subtitle').text(subject.card_subtitle || '');
             $interest.find('.create-time').text(interest.create_time);
             $interest.find('.my-comment').text(interest.comment);
             $interest.find('.my-tags').text(interest.tags);
@@ -598,22 +600,24 @@ class Review extends SegmentsPanel {
         }
         storage.local.close();
         for (let {id, version, review} of collection) {
+            if (!review) continue;
             let $review = $(TEMPLATE_REVIEW);
-            $review.find('.subject-cover img').attr('src', review.subject.pic.normal);
-            $review.find('.subject-url').attr('href', review.subject.url);
-            $review.find('.title').text(review.subject.title);
-            $review.find('.review-title').text(review.title).click(async event => {
+            const subject = review.subject || {};
+            $review.find('.subject-cover img').attr('src', subject.pic?.normal || '');
+            $review.find('.subject-url').attr('href', subject.url || '#');
+            $review.find('.title').text(subject.title || '未命名条目');
+            $review.find('.review-title').text(review.title || '').click(async event => {
                 event.preventDefault();
                 await this.showReview(id, currentVersion);
                 return false;
             });
-            $review.find('.review-url').attr('href', review.url);
-            $review.find('.subtitle').text(review.subject.card_subtitle);
-            if (review.subject.null_rating_reason) {
-                $review.find('.rating').text(review.subject.null_rating_reason);
+            $review.find('.review-url').attr('href', review.url || '#');
+            $review.find('.subtitle').text(subject.card_subtitle || '');
+            if (subject.null_rating_reason) {
+                $review.find('.rating').text(subject.null_rating_reason);
             } else {
-                $review.find('.rating-value').text(formatRating(review.subject));
-                $review.find('.rating-count').text(review.subject.rating?.count || '');
+                $review.find('.rating-value').text(formatRating(subject));
+                $review.find('.rating-count').text(subject.rating?.count || '');
             }
             $review.find('.create-time').text(review.create_time);
             if (review.rating) {
@@ -795,9 +799,9 @@ class Annotation extends Panel {
             let $annotation;
             if (subject) {
                 $annotation = $(TEMPLATE_SUBJECT_ANNOTATION);
-                $annotation.find('.subject-cover img').attr('src', subject.pic.normal);
-                $annotation.find('.subject-url').attr('href', subject.url);
-                $annotation.find('.title').text(subject.title);
+                $annotation.find('.subject-cover img').attr('src', subject.pic?.normal || '');
+                $annotation.find('.subject-url').attr('href', subject.url || '#');
+                $annotation.find('.title').text(subject.title || '未命名条目');
                 $annotation.find('.subtitle').text(subject.card_subtitle);
                 if (subject.null_rating_reason) {
                     $annotation.find('.rating').text(subject.null_rating_reason);
@@ -1235,11 +1239,11 @@ class Doumail extends Panel {
         storage.local.close();
         for (let mail of collection) {
             let $mail = $(TEMPLATE_DOUMAIL);
-            $mail.find('.avatar img').attr('src', mail.sender.avatar);
-            $mail.find('.datetime').text(mail.datetime);
-            $mail.find('.sender').text(mail.sender.name);
-            $mail.find('.content')[0].replaceChildren(Content.html(mail.content));
-            $mail.find('.sender-url').attr('href', mail.sender.url);
+            $mail.find('.avatar img').attr('src', mail.sender?.avatar || '');
+            $mail.find('.datetime').text(mail.datetime || '');
+            $mail.find('.sender').text(mail.sender?.name || '未知用户');
+            $mail.find('.content')[0].replaceChildren(Content.html(mail.content || ''));
+            $mail.find('.sender-url').attr('href', mail.sender?.url || '#');
             $mail.appendTo(this.container);
         }
         return total;
@@ -1310,14 +1314,15 @@ class Doulist extends SegmentsPanel {
         }
         storage.local.close();
         for (let {id, doulist} of collection) {
+            if (!doulist) continue;
             let $doulist = $(TEMPLATE_DOULIST);
-            $doulist.find('.cover img').attr('src', doulist.cover_url);
-            $doulist.find('.title').text(doulist.title).attr('href', doulist.url).click(async event => {
+            $doulist.find('.cover img').attr('src', doulist.cover_url || '');
+            $doulist.find('.title').text(doulist.title || '未命名豆列').attr('href', doulist.url || '#').click(async event => {
                 event.preventDefault();
                 await this.showDoulist(id);
                 return false;
             });
-            $doulist.find('.author').text(doulist.owner.name).attr('href', doulist.owner.url);
+            $doulist.find('.author').text(doulist.owner?.name || '').attr('href', doulist.owner?.url || '#');
             $doulist.find('.create-time').text(doulist.create_time);
             doulist.is_private && $doulist.find('.is-private').removeClass('is-hidden');
             $doulist.find('.update-time').text(doulist.update_time);
@@ -1433,8 +1438,8 @@ class Board extends Panel {
         storage.local.close();
         for (let {id, message, sender, sendTime} of collection) {
             let $message = $(TEMPLATE_BOARD);
-            $message.find('.avatar img').attr('src', sender.avatar);
-            $message.find('.username').text(sender.name);
+            $message.find('.avatar img').attr('src', sender?.avatar || '');
+            $message.find('.username').text(sender?.name || '');
             $message.find('.text').text(message);
             $message.find('.time').text(sendTime);
             $message.appendTo(this.container);

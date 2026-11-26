@@ -32,6 +32,14 @@ export default class Job extends EventTarget {
         this._diagnosticRunId = newDiagnosticRunId();
         this._completedTaskTypes = [];
         this._emptyTasks = [];
+        this._failedTasks = [];
+        this._activeTaskTypes = new Set();
+        this._cancelled = false;
+        this._pacing = null;
+    }
+
+    cancel() {
+        this._cancelled = true;
     }
 
     /**
@@ -80,7 +88,8 @@ export default class Job extends EventTarget {
             throw new TaskError('豆瓣登录检查返回了异常页面，请在豆瓣网站确认登录状态。');
         }
         const needsVerification = finalURL.hostname === 'sec.douban.com' ||
-            /\/(?:captcha|challenge)(?:\/|$)/i.test(finalURL.pathname);
+            /\/(?:captcha|challenge)(?:\/|$)/i.test(finalURL.pathname) ||
+            /\/misc\/sorry(?:\/|$)/i.test(finalURL.pathname);
         const needsLogin = finalURL.hostname === 'accounts.douban.com' ||
             /\/(?:login|passport)(?:\/|$)/i.test(finalURL.pathname);
         if (needsVerification || needsLogin) {
@@ -163,11 +172,14 @@ export default class Job extends EventTarget {
      * Run the job
      */
     async run() {
+        if (this._cancelled) return;
         this._isRunning = true;
         try {
             await this._run();
         } finally {
+            this._activeTaskTypes.clear();
             this._currentTask = null;
+            this._pacing = null;
             this._isRunning = false;
         }
     }
@@ -262,7 +274,7 @@ export default class Job extends EventTarget {
             const maxConcurrency = 3;  // 控制最大并发任务数
             const taskQueue = new AsyncBlockingQueue();
 
-            let fetch = Service.getFetchURL(this._service);
+            let fetch = Service.getFetchURL(this._service, () => this._cancelled);
             let deferredTasks = [];
             // 图片同步依赖其他备份任务写入的数据，必须在它们全部结束后执行。
             for (let task of this._tasks) {
@@ -284,7 +296,9 @@ export default class Job extends EventTarget {
                 task.diagnosticRunId = this._diagnosticRunId;
                 task.saveCheckpoint = () => this._service.saveState();
                 task.createSnapshot = task.isMigration ? null :
-                    () => storage.createTaskSnapshot(jobId, task.constructor.name);
+                    () => storage.createTaskSnapshot(jobId, task.constructor.name, {
+                        reuseExisting: !!task.checkpoint || task.constructor.name === 'Status',
+                    });
                 task.onPublished = task.isMigration ? null :
                     publishedAt => storage.markAccountPublished(userId, publishedAt);
 
@@ -298,7 +312,7 @@ export default class Job extends EventTarget {
             if (isMigration) {
                 // A pending or failed write in one migration must stop every
                 // later migration type; uncertain actions are never overlapped.
-                while (!taskQueue.isEmpty() && !this._failedTasks.length) {
+                while (!taskQueue.isEmpty() && !this._failedTasks.length && !this._cancelled) {
                     await this.runSingleTask(await taskQueue.dequeue(), logger);
                 }
             } else {
@@ -310,6 +324,7 @@ export default class Job extends EventTarget {
             }
 
             for (let task of deferredTasks) {
+                if (this._cancelled) break;
                 await this.runSingleTask(task, logger);
             }
 
@@ -329,19 +344,23 @@ export default class Job extends EventTarget {
      * 处理任务队列中的任务
      */
     async runTaskQueue(queue, logger) {
-        while (!queue.isEmpty()) {
+        while (!queue.isEmpty() && !this._cancelled) {
             let task = await queue.dequeue();
+            if (this._cancelled) break;
             await this.runSingleTask(task, logger);
         }
     }
 
     async runSingleTask(task, logger) {
+        if (this._cancelled) return;
         this._currentTask = task;
         const taskType = task.constructor.name;
+        this._activeTaskTypes.add(taskType);
         await recordDiagnostic(this._diagnosticRunId, 'task.started', {task: taskType});
         let snapshot;
         const publishedStorage = task.storage;
         try {
+            if (this._cancelled) throw new TaskError('任务已取消');
             snapshot = task.createSnapshot ? await task.createSnapshot() : null;
             if (snapshot?.published) {
                 task.completion = snapshot.result?.completion ?? task.completion;
@@ -358,8 +377,10 @@ export default class Job extends EventTarget {
                         await snapshot.acknowledgeCheckpointReset();
                     }
                 }
+                if (this._cancelled) throw new TaskError('任务已取消');
                 await task.run();
             }
+            if (this._cancelled) throw new TaskError('任务已取消');
             const outcome = snapshot?.published ? snapshot.result?.outcome || 'completed' :
                 (taskType === 'Annotation' && task.completion === 0 ? 'empty' : 'completed');
             if (snapshot && !snapshot.published) {
@@ -390,6 +411,7 @@ export default class Job extends EventTarget {
                 errorStack: e?.stack,
             });
         } finally {
+            this._activeTaskTypes.delete(taskType);
             task.storage = publishedStorage;
             if (snapshot) await snapshot.close();
         }
@@ -437,16 +459,36 @@ export default class Job extends EventTarget {
             localUserId: this._localUserId,
             tasks: this._tasks.map(task => task.toJSON()), // 保存任务
             isOffline: this._isOffline,
+            isMigration: this._tasks.some(task => task.isMigration),
             _id: this._id,
             _session: this._session,
             _isRunning: this._isRunning,
             _currentTask: this._currentTask ? this._currentTask.toJSON() : null,
+            activeTaskTypes: [...this._activeTaskTypes],
             diagnosticRunId: this._diagnosticRunId,
             completedTaskTypes: this._completedTaskTypes,
             emptyTasks: this._emptyTasks,
             failedTasks: this._failedTasks || [],
             error: this._errorMessage || null,
+            pacing: this._pacing || null,
         };
+    }
+
+    toPublicJSON() {
+        const json = this.toJSON();
+        delete json._session;
+        json.tasks = (json.tasks || []).map(task => {
+            const copy = {...task};
+            delete copy.session;
+            delete copy.targetUser;
+            return copy;
+        });
+        if (json._currentTask) {
+            json._currentTask = {...json._currentTask};
+            delete json._currentTask.session;
+            delete json._currentTask.targetUser;
+        }
+        return json;
     }
 
     /**
@@ -466,6 +508,7 @@ export default class Job extends EventTarget {
         job._completedTaskTypes = Array.isArray(json.completedTaskTypes) ? json.completedTaskTypes : [];
         job._errorMessage = json.error || null;
         job._emptyTasks = Array.isArray(json.emptyTasks) ? json.emptyTasks : [];
+        job._failedTasks = Array.isArray(json.failedTasks) ? json.failedTasks : [];
         job._currentTask = json._currentTask ? taskFromJSON(json._currentTask, fetch, service.logger, storage) : null;
 
         // 恢复任务

@@ -95,7 +95,7 @@ export default class Storage {
         return db;
     }
 
-    async createTaskSnapshot(jobId, taskType) {
+    async createTaskSnapshot(jobId, taskType, {reuseExisting = true} = {}) {
         const tableNames = SNAPSHOT_TABLES[taskType];
         if (!tableNames) return null; // Files cache and migrations use published data.
         if (!Number.isSafeInteger(jobId) || jobId <= 0) throw new Error('Invalid backup version');
@@ -117,7 +117,7 @@ export default class Storage {
             await stage.open();
             const state = await stage.table('version').get(stateKey);
             resetCheckpointRequired = state?.resetCheckpointRequired !== false;
-            if (!state?.ready || state.jobId !== jobId || state.taskType !== taskType) {
+            if (!reuseExisting || !state?.ready || state.jobId !== jobId || state.taskType !== taskType) {
                 fresh = true;
                 resetCheckpointRequired = true;
                 const rows = {};
@@ -187,10 +187,12 @@ export default class Storage {
         };
     }
 
-    async deleteTaskStages(userId, taskType = null) {
+    async deleteTaskStages(userId, taskType = null, jobId = null) {
         for (const name of await Dexie.getDatabaseNames()) {
             const match = /^tofu-stage\[(\d+):(\d+):([A-Za-z]+)\]$/.exec(name);
-            if (match && match[1] === String(userId) && (!taskType || match[3] === taskType)) {
+            if (match && match[1] === String(userId) &&
+                (!taskType || match[3] === taskType) &&
+                (!jobId || match[2] === String(jobId))) {
                 await Dexie.delete(name);
             }
         }
@@ -372,10 +374,12 @@ export default class Storage {
                     if (Number.isSafeInteger(job.id) && job.id > maxVersion) maxVersion = job.id;
                 }
                 await this.reserveJobIds(maxVersion);
+                const knownLocalTables = new Set(SCHEMA_LOCAL.slice(1).flatMap(schema => Object.keys(schema)));
                 for (const account of globalDb.account) {
                     const dbName = `${DB_NAME}[${account?.userId}]`;
                     const dbFilename = dbName + '.json';
                     let localDb;
+                    let createdLocalDb = false;
                     try {
                         if (!Number.isSafeInteger(account?.userId) || account.userId <= 0) throw new Error('备份账号 ID 无效');
                         if (await this.global.account.get({userId: account.userId})) throw new Error('数据库已存在，未覆盖本地内容');
@@ -383,6 +387,10 @@ export default class Storage {
                         if (!dbFile) throw new Error('数据库文件缺失');
                         const localData = JSON.parse(fflate.strFromU8(dbFile));
                         if (!localData || Array.isArray(localData) || typeof localData !== 'object') throw new Error('数据库内容格式错误');
+                        const tableKeys = Object.keys(localData);
+                        if (tableKeys.length > 0 && !tableKeys.some(key => knownLocalTables.has(key))) {
+                            throw new Error('数据库不包含可识别的豆伴数据表');
+                        }
                         for (const rows of Object.values(localData)) {
                             if (!Array.isArray(rows)) continue;
                             for (const row of rows) {
@@ -390,15 +398,25 @@ export default class Storage {
                             }
                         }
                         await this.reserveJobIds(maxVersion);
+                        if (typeof Dexie.exists === 'function' && await Dexie.exists(dbName)) {
+                            throw new Error('本地备份数据库已存在，未覆盖本地内容');
+                        }
                         localDb = this.getLocalDb(account.userId);
                         await localDb.open();
+                        createdLocalDb = true;
                         await new Promise((resolve, reject) => {
                             importFromJsonString(localDb.backendDB(), fflate.strFromU8(dbFile), error => error ? reject(error) : resolve());
                         });
                         const {cookies, session, _session, ...profile} = account;
                         await this.global.account.put(profile);
+                        createdLocalDb = false;
                         successes.push({database: dbName, filename: dbFilename});
                     } catch (error) {
+                        localDb?.close();
+                        localDb = null;
+                        if (createdLocalDb && typeof Dexie.delete === 'function') {
+                            try { await Dexie.delete(dbName); } catch (_) {}
+                        }
                         failures.push({database: dbName, filename: dbFilename, error: error?.message || String(error)});
                     } finally {
                         localDb?.close();

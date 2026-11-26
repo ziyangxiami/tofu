@@ -1,7 +1,7 @@
 'use strict';
 import Task from '../services/Task.js';
 import TaskError from '../services/TaskError.js';
-import {numericId, validatePage, htmlPageCount} from './_validation.js';
+import {numericId, validatePage, htmlPageCount, pageStep, assertNotChallengePage} from './_validation.js';
 import {recordDiagnostic} from '../services/diagnostics.js';
 
 
@@ -54,24 +54,24 @@ export default class Photo extends Task {
             .replace('{uid}', this.targetUser.id)
             .replace('{ck}', this.session?.cookies?.ck || '');
 
-        let pageCount = 1;
+        let total = null;
         const albumIds = new Set();
-        for (let i = 0; i < pageCount; i ++) {
+        for (let start = 0, page = 1; total === null || start < total; page++) {
             let fetch = await this.fetch
-            let response = await fetch(baseURL.replace('{start}', i * PAGE_SIZE), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/photos'}});
+            let response = await fetch(baseURL.replace('{start}', start), {headers: {'X-Override-Referer': 'https://m.douban.com/mine/photos'}});
             if (response.status != 200) {
                 throw new TaskError('豆瓣服务器返回错误');
             }
             let json = await response.json();
-            this.total = validatePage(json, 'photo_albums', i * PAGE_SIZE);
-            pageCount = Math.ceil(this.total / PAGE_SIZE);
+            total = this.total = validatePage(json, 'photo_albums', start);
+            const step = pageStep(json, start, PAGE_SIZE, total);
             for (let album of json.photo_albums) {
                 let resolved;
                 try {
                     resolved = this.resolveAlbumId(album);
                 } catch (error) {
                     await recordDiagnostic(this.diagnosticRunId, 'photo.invalid_id', {
-                        task: 'Photo', pages: i + 1, count: this.completion,
+                        task: 'Photo', pages: page, count: this.completion,
                         idType: album?.id == null ? 'missing' : typeof album.id,
                     });
                     throw error;
@@ -81,7 +81,7 @@ export default class Photo extends Task {
                 albumIds.add(albumId);
                 if (resolved.source === 'url') {
                     await recordDiagnostic(this.diagnosticRunId, 'photo.id_recovered', {
-                        task: 'Photo', pages: i + 1, count: 1,
+                        task: 'Photo', pages: page, count: 1,
                     });
                 }
                 let albumPrivacy = album.privacy;
@@ -112,9 +112,10 @@ export default class Photo extends Task {
                         throw new TaskError('豆瓣服务器返回错误');
                     }
                     let html = this.parseHTML(await response.text());
+                    assertNotChallengePage(html, '相册页面', response.url);
                     albumTotalPage = htmlPageCount(html, i + 1);
                     const photos = html.querySelectorAll('.photolst_photo');
-                    if (photos.length === 0 && (i > 0 || albumTotalPage > 1)) {
+                    if (photos.length === 0 && (i > 0 || albumTotalPage > 1 || (album.photos_count || 0) > 0)) {
                         throw new TaskError('相册分页未返回照片，已保留旧备份');
                     }
                     for (let photoAnchor of photos) {
@@ -170,9 +171,10 @@ export default class Photo extends Task {
                 await this.storage.album.put(albumRow);
                 this.step();
             }
+            start += step;
         }
         await this.storage.table('version').put({table: 'photo', version: version, updated: Date.now()});
-        this.complete();
+        this.total = this.completion;
     }
 
     get name() {

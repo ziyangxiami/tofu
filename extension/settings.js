@@ -1,6 +1,7 @@
 export const SERVICE_SETTINGS = {
     'service.debug': false,
     'service.requestInterval': 1000,
+    'service.adaptivePacing': true,
     'service.cloudinary': '',
 };
 

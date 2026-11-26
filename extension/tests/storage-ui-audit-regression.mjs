@@ -152,10 +152,21 @@ assert.equal(partialResult.successes.length,1);assert.equal(partialResult.failur
 assert.equal(partialResult.successes[0].database,'tofu[125]');assert.equal(accounts.get(125).cookies,undefined);
 assert.equal(progressValues.at(-1),1);
 
+const unknownTableArchive = {
+    'database.json': JSON.stringify({global:{version:2},local:{version:5,files:['tofu[126]']}}),
+    'tofu.json': JSON.stringify({account:[{userId:126}],job:[]}),
+    'tofu[126].json': JSON.stringify({unknownStore:[{id:1}]}),
+};
+const unknownResult = await storage.restore(unknownTableArchive, () => {});
+assert.equal(unknownResult.successes.length, 0);
+assert.equal(unknownResult.failures.length, 1);
+assert.match(unknownResult.failures[0].error, /可识别的豆伴数据表/);
+
 // Exercise popup state rendering with the same status values used by Service.
-async function popupState(status) {
+async function popupState(status, action = status) {
     const items = new Map(['Start', 'Stop'].map(name => [name, {
         disabled: false,
+        textContent: '',
         setAttribute() { this.disabled = true; },
         removeAttribute() { this.disabled = false; },
     }]));
@@ -169,7 +180,7 @@ async function popupState(status) {
         Zepto: () => ({on: () => {}}),
     });
     const proxy = new vm.SyntheticModule(['default'], function () {
-        this.setExport('default', {getProxy: () => ({getProperty: async () => status})});
+        this.setExport('default', {getProxy: () => ({getProperty: async prop => prop === 'serviceAction' ? action : status})});
     }, {context: popupContext});
     const popup = new vm.SourceTextModule(source('popup.js') + '\nexport {PopupMenu};', {context: popupContext});
     await popup.link(() => proxy);
@@ -191,6 +202,12 @@ assert.equal(stopping.get('Stop').disabled, true, 'stopping cannot be submitted 
 const unknown = await popupState(undefined);
 assert.equal(unknown.get('Start').disabled, true);
 assert.equal(unknown.get('Stop').disabled, true);
+const idlePopup = await popupState(1, 'idle');
+assert.equal(idlePopup.get('Start').disabled, true);
+assert.equal(idlePopup.get('Stop').disabled, true);
+const retryPopup = await popupState(1, 'retry');
+assert.equal(retryPopup.get('Start').disabled, false);
+assert.match(retryPopup.get('Start').textContent, /重试失败项/);
 
 // Invalid location hashes must leave the selected tab usable, including hashes
 // containing characters that would be invalid in a CSS attribute selector.
